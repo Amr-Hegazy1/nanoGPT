@@ -114,6 +114,8 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    # New: share one Transformer block's weights across all layers (ALBERT-style)
+    share_parameters_across_layers: bool = False
 
 class GPT(nn.Module):
 
@@ -127,7 +129,8 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            # New: build either n distinct blocks, or one shared block
+            h = nn.ModuleList([Block(config) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -177,8 +180,16 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
-            x = block(x)
+
+        # New: apply either the shared block n_layer times or iterate over distinct blocks
+        if self.config.share_parameters_across_layers:
+            blk = self.transformer.h[0]
+            for _ in range(self.config.n_layer):
+                x = blk(x)
+        else:
+            for block in self.transformer.h:
+                x = block(x)
+
         x = self.transformer.ln_f(x)
 
         if targets is not None:
