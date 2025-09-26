@@ -12,6 +12,7 @@ from model import GPTConfig, GPT
 batch_size = 12
 block_size = 1024
 bias = False
+share_parameters_across_layers = False
 real_data = True
 seed = 1337
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
@@ -53,6 +54,7 @@ gptconf = GPTConfig(
     n_layer = 12, n_head = 12, n_embd = 768, # size of the model
     dropout = 0, # for determinism
     bias = bias,
+    share_parameters_across_layers = share_parameters_across_layers,
 )
 model = GPT(gptconf)
 model.to(device)
