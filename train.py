@@ -29,6 +29,16 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
 
+# ---- Recurrent Shared Weights Sampling ----
+def sample_recurrent_depth():
+    # Samples from a log-normal distribution with params to match user's request
+    # mean=32, median=29, mode=24. min=1, max=100
+    # mu=ln(29)=3.367, sigma=sqrt(ln(29)-ln(24))=0.435
+    mu = 3.367
+    sigma = 0.435
+    sample = np.random.lognormal(mu, sigma)
+    return np.clip(int(round(sample)), 1, 100)
+
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -43,6 +53,8 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 wandb_log = False # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
+# tensorboard logging
+tensorboard_log = True # disabled by default
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -55,6 +67,10 @@ n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 share_parameters_across_layers = False
+recurrent_shared_weights = False
+recurrent_depth = 32
+enable_2d_recurrence = False
+router_capacity = 4
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -104,6 +120,9 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
+    if tensorboard_log:
+        from torch.utils.tensorboard import SummaryWriter
+        writer = SummaryWriter(log_dir=out_dir)
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -147,7 +166,11 @@ if os.path.exists(meta_path):
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, dropout=dropout,
-                  share_parameters_across_layers=share_parameters_across_layers) # start with model_args from command line
+                  share_parameters_across_layers=share_parameters_across_layers,
+                  recurrent_shared_weights=recurrent_shared_weights,
+                  recurrent_depth=recurrent_depth,
+                  enable_2d_recurrence=enable_2d_recurrence,
+                  router_capacity=router_capacity) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -169,6 +192,14 @@ elif init_from == 'resume':
     # also carry over shared-weights flag if present (default False for older checkpoints)
     if 'share_parameters_across_layers' in checkpoint_model_args:
         model_args['share_parameters_across_layers'] = checkpoint_model_args['share_parameters_across_layers']
+    if 'recurrent_shared_weights' in checkpoint_model_args:
+        model_args['recurrent_shared_weights'] = checkpoint_model_args['recurrent_shared_weights']
+    if 'recurrent_depth' in checkpoint_model_args:
+        model_args['recurrent_depth'] = checkpoint_model_args['recurrent_depth']
+    if 'enable_2d_recurrence' in checkpoint_model_args:
+        model_args['enable_2d_recurrence'] = checkpoint_model_args['enable_2d_recurrence']
+    if 'router_capacity' in checkpoint_model_args:
+        model_args['router_capacity'] = checkpoint_model_args['router_capacity']
     # create the model
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -191,6 +222,10 @@ elif init_from.startswith('gpt2'):
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = getattr(model.config, k)
     model_args['share_parameters_across_layers'] = getattr(model.config, 'share_parameters_across_layers', False)
+    model_args['recurrent_shared_weights'] = getattr(model.config, 'recurrent_shared_weights', False)
+    model_args['recurrent_depth'] = getattr(model.config, 'recurrent_depth', 32)
+    model_args['enable_2d_recurrence'] = getattr(model.config, 'enable_2d_recurrence', False)
+    model_args['router_capacity'] = getattr(model.config, 'router_capacity', 4)
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)
@@ -226,7 +261,8 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss = model(X, Y)
+                n = recurrent_depth if recurrent_shared_weights else None
+                logits, loss = model(X, Y, n=n)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -276,6 +312,11 @@ while True:
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
             })
+        if tensorboard_log and master_process:
+            writer.add_scalar('train/loss', losses['train'], iter_num)
+            writer.add_scalar('val/loss', losses['val'], iter_num)
+            writer.add_scalar('lr', lr, iter_num)
+            writer.add_scalar('mfu', running_mfu*100, iter_num)
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -302,7 +343,8 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss = model(X, Y)
+            n = sample_recurrent_depth() if recurrent_shared_weights else None
+            logits, loss = model(X, Y, n=n)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
@@ -336,6 +378,9 @@ while True:
     # termination conditions
     if iter_num > max_iters:
         break
+
+if tensorboard_log and master_process:
+    writer.close()
 
 if ddp:
     destroy_process_group()

@@ -11,7 +11,7 @@ Because the code is so simple, it is very easy to hack to your needs, train new 
 ## install
 
 ```
-pip install torch numpy transformers datasets tiktoken wandb tqdm
+pip install torch numpy transformers datasets tiktoken wandb tqdm tensorboard
 ```
 
 Dependencies:
@@ -70,6 +70,15 @@ Hasting in a roseman.
 ```
 
 lol  `¯\_(ツ)_/¯`. Not bad for a character-level model after 3 minutes of training on a GPU. Better results are quite likely obtainable by instead finetuning a pretrained GPT-2 model on this dataset (see finetuning section later).
+
+## Logging
+
+This repository supports logging to both [Weights & Biases](https://wandb.ai/) and [TensorBoard](https://www.tensorflow.org/tensorboard) for monitoring and comparing experiments.
+
+-   **Weights & Biases:** Enable by adding the `--wandb_log=True` flag to your `train.py` command. You can also specify a project and run name with `--wandb_project` and `--wandb_run_name`.
+-   **TensorBoard:** Enable by adding the `--tensorboard_log=True` flag. The TensorBoard logs will be saved in the `out_dir`. You can view them by running `tensorboard --logdir out_dir` (replace `out_dir` with your output directory).
+
+You can use either or both at the same time.
 
 **I only have a macbook** (or other cheap computer). No worries, we can still train a GPT but we want to dial things down a notch. I recommend getting the bleeding edge PyTorch nightly ([select it here](https://pytorch.org/get-started/locally/) when installing) as it is currently quite likely to make your code more efficient. But even without it, a simple train run could look as follows:
 
@@ -203,6 +212,32 @@ You can share a single Transformer block’s parameters across all layers (ALBER
   - Benchmarking: `python bench.py --share_parameters_across_layers=True`
 - Checkpoints: the flag is saved in `model_args` and is respected on resume. If resuming, the checkpoint value takes precedence.
 - Pretrained GPT-2 weights: cross-layer sharing is not supported when initializing from OpenAI GPT-2 checkpoints (`--init_from=gpt2*`). It is intended for from-scratch training.
+
+### Recurrent Shared Weights (Experimental)
+
+This experiment allows you to reuse a single shared transformer block `n` times. `n` is sampled from a log-normal distribution during training, and can be set manually during inference. This allows for a dynamic depth during training.
+
+*   **How to use:**
+    *   To enable this during training, use the following flags:
+        ```bash
+        python train.py --share_parameters_across_layers=True --recurrent_shared_weights=True
+        ```
+    *   You can optionally change the default mean of the sampling distribution with `--recurrent_depth=<value>`.
+    *   During inference, you can specify the number of recurrent steps `n` with:
+        ```bash
+        python sample.py --recurrent_depth=<value>
+        ```
+
+### 2D Recurrence with a Router (Mixture of Experts - Experimental)
+
+This experiment implements a soft Mixture of Experts (MoE) model. At each layer, a router calculates a weighted combination of multiple "expert" transformer blocks. This allows for a much larger model capacity without a proportional increase in computational cost.
+
+*   **How to use:**
+    *   To enable this during training, use the following flag:
+        ```bash
+        python train.py --enable_2d_recurrence=True
+        ```
+    *   You can control the number of experts with `--router_capacity=<value>` (default is 4).
 
 ## efficiency notes
 
