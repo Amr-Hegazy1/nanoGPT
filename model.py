@@ -105,6 +105,15 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class Router(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.num_experts = config.router_capacity
+        self.router_fc = nn.Linear(config.n_embd, self.num_experts, bias=False)
+
+    def forward(self, x):
+        return self.router_fc(x)
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -114,8 +123,15 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-    # New: share one Transformer block's weights across all layers (ALBERT-style)
+    # share one Transformer block's weights across all layers (ALBERT-style)
     share_parameters_across_layers: bool = False
+    # experiment: recurrent shared weights
+    recurrent_shared_weights: bool = False
+    recurrent_depth: int = 32 # default depth for recurrent shared weights
+    # experiment: 2D recurrence with router
+    enable_2d_recurrence: bool = False
+    # a parameter for the router
+    router_capacity: int = 4
 
 class GPT(nn.Module):
 
@@ -125,12 +141,18 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+        if config.enable_2d_recurrence:
+            h = nn.ModuleList([Block(config) for _ in range(config.router_capacity)])
+            self.router = Router(config)
+        else:
+            h = nn.ModuleList([Block(config) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)])
+            self.router = None
+
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            # New: build either n distinct blocks, or one shared block
-            h = nn.ModuleList([Block(config) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)]),
+            h = h,
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -170,7 +192,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, n=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -181,10 +203,30 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        # New: apply either the shared block n_layer times or iterate over distinct blocks
-        if self.config.share_parameters_across_layers:
-            blk = self.transformer.h[0]
+        if self.config.enable_2d_recurrence:
+            # Soft MoE for n_layer steps
             for _ in range(self.config.n_layer):
+                router_logits = self.router(x)
+                router_probs = F.softmax(router_logits, dim=-1) # (B, T, num_experts)
+
+                expert_outputs = torch.stack([expert(x) for expert in self.transformer.h], dim=-1) # (B, T, C, num_experts)
+                
+                # unsqueeze router_probs for broadcasting
+                router_probs_exp = router_probs.unsqueeze(2) # (B, T, 1, num_experts)
+                
+                # weighted sum of expert outputs
+                x = torch.sum(expert_outputs * router_probs_exp, dim=-1)
+        elif self.config.share_parameters_across_layers:
+            blk = self.transformer.h[0]
+            
+            # Determine the number of recurrent steps
+            if self.config.recurrent_shared_weights:
+                # During training, n is sampled and passed. During inference, it can be user-specified.
+                num_layers = n if n is not None else self.config.recurrent_depth
+            else:
+                num_layers = self.config.n_layer
+
+            for _ in range(num_layers):
                 x = blk(x)
         else:
             for block in self.transformer.h:
@@ -314,7 +356,7 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, n=None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -324,7 +366,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits, _ = self(idx_cond, n=n)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
