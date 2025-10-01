@@ -204,6 +204,7 @@ class GPT(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
 
         if self.config.enable_2d_recurrence:
+            # TODO: top-k experts
             # Soft MoE for n_layer steps
             for _ in range(self.config.n_layer):
                 router_logits = self.router(x)
@@ -228,7 +229,7 @@ class GPT(nn.Module):
 
             for _ in range(num_layers):
                 x = blk(x)
-        else:
+        else: # Baseline
             for block in self.transformer.h:
                 x = block(x)
 
