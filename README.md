@@ -228,16 +228,37 @@ This experiment allows you to reuse a single shared transformer block `n` times.
         python sample.py --recurrent_depth=<value>
         ```
 
-### 2D Recurrence with a Router (Mixture of Experts - Experimental)
+### Mixture of Experts (MoE) (Experimental)
 
-This experiment implements a soft Mixture of Experts (MoE) model. At each layer, a router calculates a weighted combination of multiple "expert" transformer blocks. This allows for a much larger model capacity without a proportional increase in computational cost.
+This experiment implements a Mixture of Experts (MoE) model. At each layer, a router selects a subset of "expert" MLPs to process the input. This allows for a much larger model capacity without a proportional increase in computational cost.
+
+*   **Top-k Routing:** The router can select the top-k experts based on the router logits.
+*   **Hard Routing:** Instead of a weighted average, you can use hard routing to select a single expert for each token.
+*   **Dummy Expert:** A dummy expert (an identity function) is included to allow tokens to be skipped, which can improve efficiency.
+
+*   **How to use:**
+    *   To enable MoE during training, use the following flag:
+        ```bash
+        python train.py --moe=True
+        ```
+    *   You can control the number of experts with `--moe_num_experts=<value>` (default is 4).
+    *   You can set the number of top experts to use with `--moe_top_k=<value>` (default is 2).
+    *   To use hard routing, add the `--moe_hard_routing=True` flag.
+
+### Random 2D Recurrence (Experimental)
+
+This experiment implements a novel recurrent block that operates in two dimensions with random recurrence counts.
+
+*   The block consists of three sub-blocks: a horizontal recurrent block, a vertical recurrent block, and a verifier block.
+*   For each forward pass, the input is processed by a random number of horizontal and vertical recurrences.
+*   The output is then passed through a verifier block, which also has a random number of recurrences.
 
 *   **How to use:**
     *   To enable this during training, use the following flag:
         ```bash
-        python train.py --enable_2d_recurrence=True
+        python train.py --enable_random_2d_recurrence=True
         ```
-    *   You can control the number of experts with `--router_capacity=<value>` (default is 4).
+
 
 ## efficiency notes
 

@@ -98,21 +98,94 @@ class Block(nn.Module):
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        if config.moe:
+            self.mlp = MoE(config)
+        else:
+            self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
 
-class Router(nn.Module):
+class MoE(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.num_experts = config.router_capacity
-        self.router_fc = nn.Linear(config.n_embd, self.num_experts, bias=False)
+        self.num_experts = config.moe_num_experts
+        self.top_k = config.moe_top_k
+        self.hard_routing = config.moe_hard_routing
+
+        self.experts = nn.ModuleList([MLP(config) for _ in range(self.num_experts)])
+        self.dummy_expert = nn.Identity()
+        self.router = nn.Linear(config.n_embd, self.num_experts + 1) # +1 for dummy expert
 
     def forward(self, x):
-        return self.router_fc(x)
+        router_logits = self.router(x)
+        
+        if self.hard_routing:
+            # Hard routing: select one expert
+            expert_indices = torch.argmax(router_logits, dim=-1)
+            output = torch.zeros_like(x)
+            for i in range(self.num_experts + 1):
+                mask = (expert_indices == i)
+                if mask.any():
+                    if i == self.num_experts:
+                        output[mask] = self.dummy_expert(x[mask])
+                    else:
+                        output[mask] = self.experts[i](x[mask]).to(x.dtype)
+        else:
+            # Soft routing: weighted average of top-k experts
+            router_probs = F.softmax(router_logits, dim=-1)
+            top_k_probs, top_k_indices = torch.topk(router_probs, self.top_k, dim=-1)
+            
+            output = torch.zeros_like(x)
+            for i in range(self.top_k):
+                expert_indices = top_k_indices[..., i]
+                expert_probs = top_k_probs[..., i]
+
+                for j in range(self.num_experts + 1):
+                    mask = (expert_indices == j)
+                    if mask.any():
+                        if j == self.num_experts:
+                            expert_output = self.dummy_expert(x[mask])
+                        else:
+                            expert_output = self.experts[j](x[mask])
+                        output[mask] += expert_output * expert_probs[mask].unsqueeze(-1)
+
+        # This is a hack to make DDP happy. It ensures all expert parameters are used in the forward pass.
+        if self.training:
+            dummy_val = sum(p.sum() for p in self.router.parameters()) * 0.0
+            for expert in self.experts:
+                for p in expert.parameters():
+                    dummy_val += p.sum() * 0.0
+            output = output + dummy_val
+
+        return output
+
+class Random2DRecurrence(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.horizontal_block = Block(config)
+        self.vertical_block = Block(config)
+        self.verifier_block = Block(config)
+
+    def forward(self, x):
+        # Random number of recurrences for horizontal and vertical paths
+        num_horizontal = torch.randint(1, 10, (1,)).item()
+        num_vertical = torch.randint(1, 10, (1,)).item()
+        
+        # Apply horizontal and vertical recurrences
+        for _ in range(num_horizontal):
+            x = self.horizontal_block(x)
+        for _ in range(num_vertical):
+            x = self.vertical_block(x)
+        
+        # Verifier block with random recurrences
+        num_verifier = torch.randint(1, 10, (1,)).item()
+        for _ in range(num_verifier):
+            x = self.verifier_block(x)
+            
+        return x
 
 @dataclass
 class GPTConfig:
@@ -128,10 +201,13 @@ class GPTConfig:
     # experiment: recurrent shared weights
     recurrent_shared_weights: bool = False
     recurrent_depth: int = 32 # default depth for recurrent shared weights
-    # experiment: 2D recurrence with router
-    enable_2d_recurrence: bool = False
-    # a parameter for the router
-    router_capacity: int = 4
+    # MoE parameters
+    moe: bool = False
+    moe_num_experts: int = 4
+    moe_top_k: int = 2
+    moe_hard_routing: bool = False
+    # 2D recurrence
+    enable_random_2d_recurrence: bool = False
 
 class GPT(nn.Module):
 
@@ -141,12 +217,11 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
-        if config.enable_2d_recurrence:
-            h = nn.ModuleList([Block(config) for _ in range(config.router_capacity)])
-            self.router = Router(config)
+        if config.enable_random_2d_recurrence:
+            self.random_2d_recurrence = Random2DRecurrence(config)
+            h = nn.ModuleList()
         else:
             h = nn.ModuleList([Block(config) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)])
-            self.router = None
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -203,20 +278,8 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        if self.config.enable_2d_recurrence:
-            # TODO: top-k experts
-            # Soft MoE for n_layer steps
-            for _ in range(self.config.n_layer):
-                router_logits = self.router(x)
-                router_probs = F.softmax(router_logits, dim=-1) # (B, T, num_experts)
-
-                expert_outputs = torch.stack([expert(x) for expert in self.transformer.h], dim=-1) # (B, T, C, num_experts)
-                
-                # unsqueeze router_probs for broadcasting
-                router_probs_exp = router_probs.unsqueeze(2) # (B, T, 1, num_experts)
-                
-                # weighted sum of expert outputs
-                x = torch.sum(expert_outputs * router_probs_exp, dim=-1)
+        if self.config.enable_random_2d_recurrence:
+            x = self.random_2d_recurrence(x)
         elif self.config.share_parameters_across_layers:
             blk = self.transformer.h[0]
             
