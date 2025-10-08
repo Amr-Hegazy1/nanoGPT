@@ -69,8 +69,13 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 share_parameters_across_layers = False
 recurrent_shared_weights = False
 recurrent_depth = 32
-enable_2d_recurrence = False
-router_capacity = 4
+# MoE parameters
+moe = False
+moe_num_experts = 4
+moe_top_k = 2
+moe_hard_routing = False
+# 2D recurrence
+enable_random_2d_recurrence = False
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -169,8 +174,8 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   share_parameters_across_layers=share_parameters_across_layers,
                   recurrent_shared_weights=recurrent_shared_weights,
                   recurrent_depth=recurrent_depth,
-                  enable_2d_recurrence=enable_2d_recurrence,
-                  router_capacity=router_capacity) # start with model_args from command line
+                  moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing,
+                  enable_random_2d_recurrence=enable_random_2d_recurrence) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -196,10 +201,16 @@ elif init_from == 'resume':
         model_args['recurrent_shared_weights'] = checkpoint_model_args['recurrent_shared_weights']
     if 'recurrent_depth' in checkpoint_model_args:
         model_args['recurrent_depth'] = checkpoint_model_args['recurrent_depth']
-    if 'enable_2d_recurrence' in checkpoint_model_args:
-        model_args['enable_2d_recurrence'] = checkpoint_model_args['enable_2d_recurrence']
-    if 'router_capacity' in checkpoint_model_args:
-        model_args['router_capacity'] = checkpoint_model_args['router_capacity']
+    if 'moe' in checkpoint_model_args:
+        model_args['moe'] = checkpoint_model_args['moe']
+    if 'moe_num_experts' in checkpoint_model_args:
+        model_args['moe_num_experts'] = checkpoint_model_args['moe_num_experts']
+    if 'moe_top_k' in checkpoint_model_args:
+        model_args['moe_top_k'] = checkpoint_model_args['moe_top_k']
+    if 'moe_hard_routing' in checkpoint_model_args:
+        model_args['moe_hard_routing'] = checkpoint_model_args['moe_hard_routing']
+    if 'enable_random_2d_recurrence' in checkpoint_model_args:
+        model_args['enable_random_2d_recurrence'] = checkpoint_model_args['enable_random_2d_recurrence']
     # create the model
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -224,8 +235,11 @@ elif init_from.startswith('gpt2'):
     model_args['share_parameters_across_layers'] = getattr(model.config, 'share_parameters_across_layers', False)
     model_args['recurrent_shared_weights'] = getattr(model.config, 'recurrent_shared_weights', False)
     model_args['recurrent_depth'] = getattr(model.config, 'recurrent_depth', 32)
-    model_args['enable_2d_recurrence'] = getattr(model.config, 'enable_2d_recurrence', False)
-    model_args['router_capacity'] = getattr(model.config, 'router_capacity', 4)
+    model_args['moe'] = getattr(model.config, 'moe', False)
+    model_args['moe_num_experts'] = getattr(model.config, 'moe_num_experts', 4)
+    model_args['moe_top_k'] = getattr(model.config, 'moe_top_k', 2)
+    model_args['moe_hard_routing'] = getattr(model.config, 'moe_hard_routing', False)
+    model_args['enable_random_2d_recurrence'] = getattr(model.config, 'enable_random_2d_recurrence', False)
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)
@@ -273,10 +287,12 @@ def get_lr(it):
     # 1) linear warmup for warmup_iters steps
     if it < warmup_iters:
         return learning_rate * (it + 1) / (warmup_iters + 1)
-    # 2) if it > lr_decay_iters, return min learning rate
-    if it > lr_decay_iters:
+    # 2) if it is past the decay phase, return min learning rate
+    if it >= lr_decay_iters:
         return min_lr
     # 3) in between, use cosine decay down to min learning rate
+    if warmup_iters == lr_decay_iters:
+        return min_lr
     decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
