@@ -39,11 +39,18 @@ python train.py $CONFIG --moe=True --moe_hard_routing=True --wandb_log=True --wa
 echo "Sampling from experiment 5"
 python sample.py --out_dir=$EXP5_DIR > $EXP5_DIR/samples.txt
 
-# Experiment 6: Random 2D Recurrence
-echo "Running experiment 6: Random 2D Recurrence"
-EXP6_DIR="out-shakespeare-char-random-2d-recurrence"
-python train.py $CONFIG --enable_random_2d_recurrence=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence" --out_dir=$EXP6_DIR --compile=False --batch_size=12
+# Experiment 6: Random 2D Recurrence (Flat)
+echo "Running experiment 6: Random 2D Recurrence (Flat)"
+EXP6_DIR="out-shakespeare-char-random-2d-recurrence-flat"
+python train.py $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='flat' --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-flat" --out_dir=$EXP6_DIR --compile=False --batch_size=12
 echo "Sampling from experiment 6"
 python sample.py --out_dir=$EXP6_DIR > $EXP6_DIR/samples.txt
+
+# Experiment 7: Random 2D Recurrence (Hierarchical)
+echo "Running experiment 7: Random 2D Recurrence (Hierarchical)"
+EXP7_DIR="out-shakespeare-char-random-2d-recurrence-hierarchical"
+python train.py $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical' --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-hierarchical" --out_dir=$EXP7_DIR --compile=False --batch_size=12
+echo "Sampling from experiment 7"
+python sample.py --out_dir=$EXP7_DIR > $EXP7_DIR/samples.txt
 
 echo "All experiments complete."
