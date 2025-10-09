@@ -162,7 +162,7 @@ class MoE(nn.Module):
 
         return output
 
-class Random2DRecurrence(nn.Module):
+class Random2DRecurrenceFlat(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.horizontal_block = Block(config)
@@ -170,22 +170,88 @@ class Random2DRecurrence(nn.Module):
         self.verifier_block = Block(config)
 
     def forward(self, x):
-        # Random number of recurrences for horizontal and vertical paths
-        num_horizontal = torch.randint(1, 10, (1,)).item()
-        num_vertical = torch.randint(1, 10, (1,)).item()
+        # Vertical expansion: Create a random number of levels
+        num_vertical = torch.randint(1, 5, (1,)).item()
         
-        # Apply horizontal and vertical recurrences
-        for _ in range(num_horizontal):
-            x = self.horizontal_block(x)
+        processed_levels = []
         for _ in range(num_vertical):
-            x = self.vertical_block(x)
-        
-        # Verifier block with random recurrences
-        num_verifier = torch.randint(1, 10, (1,)).item()
-        for _ in range(num_verifier):
-            x = self.verifier_block(x)
+            # Each level starts from the original input x and is processed by the vertical_block once
+            level_output = self.vertical_block(x)
             
-        return x
+            # Horizontal expansion for each level with a different random number of times
+            num_horizontal = torch.randint(1, 5, (1,)).item()
+            for _ in range(num_horizontal):
+                level_output = self.horizontal_block(level_output)
+            
+            processed_levels.append(level_output)
+            
+        # Combine all processed levels
+        if not processed_levels:
+            combined_output = x
+        else:
+            combined_output = torch.stack(processed_levels).sum(dim=0)
+            
+        # Verifier block with its own horizontal expansion
+        num_verifier = torch.randint(1, 5, (1,)).item()
+        verified_output = combined_output
+        for _ in range(num_verifier):
+            verified_output = self.verifier_block(verified_output)
+            
+        return verified_output
+
+class Random2DRecurrenceHierarchical(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.horizontal_block = Block(config)
+        self.vertical_block = Block(config)
+        self.verifier_block = Block(config)
+
+    def forward(self, x):
+        # Vertical expansion: Create a random number of levels
+        num_vertical = torch.randint(1, 5, (1,)).item()
+        
+        processed_levels = []
+        for _ in range(num_vertical):
+            # Each level starts from the original input x and is processed by the vertical_block once
+            level_output = self.vertical_block(x)
+            
+            # Horizontal expansion for each level with a different random number of times
+            num_horizontal = torch.randint(1, 5, (1,)).item()
+            for _ in range(num_horizontal):
+                level_output = self.horizontal_block(level_output)
+            
+            processed_levels.append(level_output)
+            
+        # Hierarchical verification
+        verifying_levels = processed_levels
+        while len(verifying_levels) > 1:
+            next_level = []
+            # process in pairs
+            for i in range(0, len(verifying_levels) - 1, 2):
+                t1 = verifying_levels[i]
+                t2 = verifying_levels[i+1]
+                combined = t1 + t2
+                
+                # Apply verifier block with horizontal expansion
+                num_verifier_expansions = torch.randint(1, 5, (1,)).item()
+                verified = combined
+                for _ in range(num_verifier_expansions):
+                    verified = self.verifier_block(verified)
+                    
+                next_level.append(verified)
+            
+            # if there is an odd one out, just append it
+            if len(verifying_levels) % 2 == 1:
+                next_level.append(verifying_levels[-1])
+                
+            verifying_levels = next_level
+
+        if verifying_levels:
+            final_output = verifying_levels[0]
+        else:
+            final_output = x
+            
+        return final_output
 
 @dataclass
 class GPTConfig:
@@ -208,6 +274,7 @@ class GPTConfig:
     moe_hard_routing: bool = False
     # 2D recurrence
     enable_random_2d_recurrence: bool = False
+    random_2d_recurrence_type: str = 'flat' # 'flat' or 'hierarchical'
 
 class GPT(nn.Module):
 
@@ -217,8 +284,14 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+        self.random_2d_recurrence = None
         if config.enable_random_2d_recurrence:
-            self.random_2d_recurrence = Random2DRecurrence(config)
+            if config.random_2d_recurrence_type == 'flat':
+                self.random_2d_recurrence = Random2DRecurrenceFlat(config)
+            elif config.random_2d_recurrence_type == 'hierarchical':
+                self.random_2d_recurrence = Random2DRecurrenceHierarchical(config)
+            else:
+                raise ValueError(f"Unknown random_2d_recurrence_type: {config.random_2d_recurrence_type}")
             h = nn.ModuleList()
         else:
             h = nn.ModuleList([Block(config) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)])

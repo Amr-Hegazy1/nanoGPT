@@ -76,6 +76,7 @@ moe_top_k = 2
 moe_hard_routing = False
 # 2D recurrence
 enable_random_2d_recurrence = False
+random_2d_recurrence_type = 'flat' # 'flat' or 'hierarchical'
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -175,7 +176,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   recurrent_shared_weights=recurrent_shared_weights,
                   recurrent_depth=recurrent_depth,
                   moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing,
-                  enable_random_2d_recurrence=enable_random_2d_recurrence) # start with model_args from command line
+                  enable_random_2d_recurrence=enable_random_2d_recurrence, random_2d_recurrence_type=random_2d_recurrence_type) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -211,6 +212,8 @@ elif init_from == 'resume':
         model_args['moe_hard_routing'] = checkpoint_model_args['moe_hard_routing']
     if 'enable_random_2d_recurrence' in checkpoint_model_args:
         model_args['enable_random_2d_recurrence'] = checkpoint_model_args['enable_random_2d_recurrence']
+    if 'random_2d_recurrence_type' in checkpoint_model_args:
+        model_args['random_2d_recurrence_type'] = checkpoint_model_args['random_2d_recurrence_type']
     # create the model
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -240,6 +243,7 @@ elif init_from.startswith('gpt2'):
     model_args['moe_top_k'] = getattr(model.config, 'moe_top_k', 2)
     model_args['moe_hard_routing'] = getattr(model.config, 'moe_hard_routing', False)
     model_args['enable_random_2d_recurrence'] = getattr(model.config, 'enable_random_2d_recurrence', False)
+    model_args['random_2d_recurrence_type'] = getattr(model.config, 'random_2d_recurrence_type', 'flat')
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)
