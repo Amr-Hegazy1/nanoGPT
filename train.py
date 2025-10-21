@@ -75,9 +75,6 @@ moe_num_experts = 4
 moe_top_k = 2
 moe_hard_routing = False
 share_moe_experts = False
-# 2D recurrence
-enable_random_2d_recurrence = False
-random_2d_recurrence_type = 'flat' # 'flat' or 'hierarchical'
 scale_loss_by_n_layer = False
 layer_dropout = 0.0
 sticky_dropout = 0.0
@@ -181,7 +178,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   recurrent_shared_weights=recurrent_shared_weights,
                   recurrent_depth=recurrent_depth,
                   moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing, share_moe_experts=share_moe_experts,
-                  enable_random_2d_recurrence=enable_random_2d_recurrence, random_2d_recurrence_type=random_2d_recurrence_type, scale_loss_by_n_layer=scale_loss_by_n_layer,
+                  scale_loss_by_n_layer=scale_loss_by_n_layer,
                   layer_dropout=layer_dropout, sticky_dropout=sticky_dropout, learned_stopping=learned_stopping)
 if init_from == 'scratch':
     # init a new model from scratch
@@ -218,10 +215,6 @@ elif init_from == 'resume':
         model_args['moe_hard_routing'] = checkpoint_model_args['moe_hard_routing']
     if 'share_moe_experts' in checkpoint_model_args:
         model_args['share_moe_experts'] = checkpoint_model_args['share_moe_experts']
-    if 'enable_random_2d_recurrence' in checkpoint_model_args:
-        model_args['enable_random_2d_recurrence'] = checkpoint_model_args['enable_random_2d_recurrence']
-    if 'random_2d_recurrence_type' in checkpoint_model_args:
-        model_args['random_2d_recurrence_type'] = checkpoint_model_args['random_2d_recurrence_type']
     if 'scale_loss_by_n_layer' in checkpoint_model_args:
         model_args['scale_loss_by_n_layer'] = checkpoint_model_args['scale_loss_by_n_layer']
     if 'layer_dropout' in checkpoint_model_args:
@@ -259,8 +252,6 @@ elif init_from.startswith('gpt2'):
     model_args['moe_top_k'] = getattr(model.config, 'moe_top_k', 2)
     model_args['moe_hard_routing'] = getattr(model.config, 'moe_hard_routing', False)
     model_args['share_moe_experts'] = getattr(model.config, 'share_moe_experts', False)
-    model_args['enable_random_2d_recurrence'] = getattr(model.config, 'enable_random_2d_recurrence', False)
-    model_args['random_2d_recurrence_type'] = getattr(model.config, 'random_2d_recurrence_type', 'flat')
     model_args['scale_loss_by_n_layer'] = getattr(model.config, 'scale_loss_by_n_layer', False)
     model_args['layer_dropout'] = getattr(model.config, 'layer_dropout', 0.0)
     model_args['sticky_dropout'] = getattr(model.config, 'sticky_dropout', 0.0)
@@ -288,7 +279,7 @@ if compile:
 
 # wrap model into DDP container
 if ddp:
-    find_unused_parameters = config['moe'] or config['recurrent_shared_weights'] or config['enable_random_2d_recurrence']
+    find_unused_parameters = config['moe'] or config['recurrent_shared_weights']
     model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=find_unused_parameters)
 
 # helps estimate an arbitrarily accurate loss over either split using many batches

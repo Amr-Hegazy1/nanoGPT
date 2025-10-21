@@ -259,35 +259,6 @@ This experiment allows you to share the same set of experts across all layers of
         python train.py --moe=True --share_moe_experts=True
         ```
 
-### Random 2D Recurrence (Experimental)
-
-This experiment implements a novel recurrent block that operates in two dimensions with random recurrence counts. It comes in two flavors: `flat` and `hierarchical`.
-
-*   **Loss Scaling:** The loss can be scaled by the number of expanded layers using the `--scale_loss_by_n_layer` flag. This can be useful for stabilizing training when using a variable number of layers.
-
-*   **Validation Loss Plot:** After training a model with random 2D recurrence, a plot of the validation loss versus the number of expanded layers is generated and saved to the output directory. This can help visualize the effect of the number of layers on the model's performance.
-
-*   The block consists of three sub-blocks: a horizontal recurrent block, a vertical recurrent block, and a verifier block.
-*   The input is first expanded vertically a random number of times to create "levels".
-*   Each level is then expanded horizontally a random number of times.
-*   The way the levels are combined and verified depends on the `random_2d_recurrence_type`:
-    *   **`flat` (default):** All processed levels are summed up and then passed to a verifier block, which itself is applied a random number of times.
-    *   **`hierarchical`:** The processed levels are combined in a tree-like structure. They are combined and verified in pairs, reducing the number of levels by half at each step, until only one tensor remains.
-
-*   **How to use:**
-    *   To enable this during training, use the following flag:
-        ```bash
-        python train.py --enable_random_2d_recurrence=True
-        ```
-    *   To select the type of recurrence, use the `--random_2d_recurrence_type` flag:
-        ```bash
-        # For flat recurrence (default)
-        python train.py --enable_random_2d_recurrence=True --random_2d_recurrence_type='flat'
-
-        # For hierarchical recurrence
-        python train.py --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical'
-        ```
-
 ### Layer Dropout (Experimental)
 
 This experiment applies dropout to entire layers within a recurrent block. It can be used as a form of regularization.

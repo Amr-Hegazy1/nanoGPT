@@ -76,198 +76,82 @@ $TRAIN_CMD $CONFIG --moe=True --share_moe_experts=True --wandb_log=True --wandb_
 echo "Sampling from experiment 6"
 python sample.py --out_dir=$EXP6_DIR > $EXP6_DIR/samples.txt
 
-# Experiment 7: Random 2D Recurrence (Flat)
-echo "Running experiment 7: Random 2D Recurrence (Flat)"
-EXP7_DIR="out-gpt2-random-2d-recurrence-flat"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='flat' --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-flat" --out_dir=$EXP7_DIR --compile=False --batch_size=4
+# Experiment 7: Recurrent Shared Weights with loss scaling
+echo "Running experiment 7: Recurrent Shared Weights with loss scaling"
+EXP7_DIR="out-gpt2-recurrent-shared-loss-scaling"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-loss-scaling" --out_dir=$EXP7_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 7"
 python sample.py --out_dir=$EXP7_DIR > $EXP7_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP7_DIR
 
-# Experiment 8: Random 2D Recurrence (Hierarchical)
-echo "Running experiment 8: Random 2D Recurrence (Hierarchical)"
-EXP8_DIR="out-gpt2-random-2d-recurrence-hierarchical"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical' --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-hierarchical" --out_dir=$EXP8_DIR --compile=False --batch_size=4
+
+
+# Experiment 8: Recurrent Shared MoE
+echo "Running experiment 8: Recurrent Shared MoE"
+EXP8_DIR="out-gpt2-recurrent-shared-moe"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe" --out_dir=$EXP8_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 8"
 python sample.py --out_dir=$EXP8_DIR > $EXP8_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP8_DIR
 
 
 
-# Experiment 9: Recurrent Shared Weights with loss scaling
-
-echo "Running experiment 9: Recurrent Shared Weights with loss scaling"
-
-EXP9_DIR="out-gpt2-recurrent-shared-loss-scaling"
-
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-loss-scaling" --out_dir=$EXP9_DIR --compile=False --batch_size=4
-
+# Experiment 9: Recurrent Shared MoE with loss scaling
+echo "Running experiment 9: Recurrent Shared MoE with loss scaling"
+EXP9_DIR="out-gpt2-recurrent-shared-moe-loss-scaling"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-loss-scaling" --out_dir=$EXP9_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 9"
-
 python sample.py --out_dir=$EXP9_DIR > $EXP9_DIR/samples.txt
-
 python plot_recurrent_loss.py --out_dir=$EXP9_DIR
 
 
 
-# Experiment 10: Random 2D Recurrence (Flat) with loss scaling
-
-echo "Running experiment 10: Random 2D Recurrence (Flat) with loss scaling"
-
-EXP10_DIR="out-gpt2-random-2d-recurrence-flat-loss-scaling"
-
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='flat' --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-flat-loss-scaling" --out_dir=$EXP10_DIR --compile=False --batch_size=4
-
+# Experiment 10: Recurrent Shared Weights with Layer Dropout
+echo "Running experiment 10: Recurrent Shared Weights with Layer Dropout"
+EXP10_DIR="out-gpt2-recurrent-shared-layer-dropout"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-layer-dropout" --out_dir=$EXP10_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 10"
-
 python sample.py --out_dir=$EXP10_DIR > $EXP10_DIR/samples.txt
-
 python plot_recurrent_loss.py --out_dir=$EXP10_DIR
 
-
-
-# Experiment 11: Random 2D Recurrence (Hierarchical) with loss scaling
-
-echo "Running experiment 11: Random 2D Recurrence (Hierarchical) with loss scaling"
-
-EXP11_DIR="out-gpt2-random-2d-recurrence-hierarchical-loss-scaling"
-
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical' --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-hierarchical-loss-scaling" --out_dir=$EXP11_DIR --compile=False --batch_size=4
-
+# Experiment 11: Recurrent Shared Weights with Sticky Dropout
+echo "Running experiment 11: Recurrent Shared Weights with Sticky Dropout"
+EXP11_DIR="out-gpt2-recurrent-shared-sticky-dropout"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-sticky-dropout" --out_dir=$EXP11_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 11"
-
 python sample.py --out_dir=$EXP11_DIR > $EXP11_DIR/samples.txt
-
 python plot_recurrent_loss.py --out_dir=$EXP11_DIR
 
-
-
-# Experiment 12: Recurrent Shared MoE
-
-echo "Running experiment 12: Recurrent Shared MoE"
-
-EXP12_DIR="out-gpt2-recurrent-shared-moe"
-
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe" --out_dir=$EXP12_DIR --compile=False --batch_size=4
-
+# Experiment 12: Recurrent Shared Weights with Learned Stopping
+echo "Running experiment 12: Recurrent Shared Weights with Learned Stopping"
+EXP12_DIR="out-gpt2-recurrent-shared-learned-stopping"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-learned-stopping" --out_dir=$EXP12_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 12"
-
 python sample.py --out_dir=$EXP12_DIR > $EXP12_DIR/samples.txt
-
 python plot_recurrent_loss.py --out_dir=$EXP12_DIR
 
-
-
-# Experiment 13: Recurrent Shared MoE with loss scaling
-
-echo "Running experiment 13: Recurrent Shared MoE with loss scaling"
-
-EXP13_DIR="out-gpt2-recurrent-shared-moe-loss-scaling"
-
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-loss-scaling" --out_dir=$EXP13_DIR --compile=False --batch_size=4
-
+# Experiment 13: Recurrent Shared MoE with Layer Dropout
+echo "Running experiment 13: Recurrent Shared MoE with Layer Dropout"
+EXP13_DIR="out-gpt2-recurrent-shared-moe-layer-dropout"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-layer-dropout" --out_dir=$EXP13_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 13"
-
 python sample.py --out_dir=$EXP13_DIR > $EXP13_DIR/samples.txt
-
 python plot_recurrent_loss.py --out_dir=$EXP13_DIR
 
-
-
-# Experiment 14: Recurrent Shared Weights with Layer Dropout
-echo "Running experiment 14: Recurrent Shared Weights with Layer Dropout"
-EXP14_DIR="out-gpt2-recurrent-shared-layer-dropout"
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-layer-dropout" --out_dir=$EXP14_DIR --compile=False --batch_size=4
+# Experiment 14: Recurrent Shared MoE with Sticky Dropout
+echo "Running experiment 14: Recurrent Shared MoE with Sticky Dropout"
+EXP14_DIR="out-gpt2-recurrent-shared-moe-sticky-dropout"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-sticky-dropout" --out_dir=$EXP14_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 14"
 python sample.py --out_dir=$EXP14_DIR > $EXP14_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP14_DIR
 
-# Experiment 15: Recurrent Shared Weights with Sticky Dropout
-echo "Running experiment 15: Recurrent Shared Weights with Sticky Dropout"
-EXP15_DIR="out-gpt2-recurrent-shared-sticky-dropout"
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-sticky-dropout" --out_dir=$EXP15_DIR --compile=False --batch_size=4
+# Experiment 15: Recurrent Shared MoE with Learned Stopping
+echo "Running experiment 15: Recurrent Shared MoE with Learned Stopping"
+EXP15_DIR="out-gpt2-recurrent-shared-moe-learned-stopping"
+$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-learned-stopping" --out_dir=$EXP15_DIR --compile=False --batch_size=4
 echo "Sampling from experiment 15"
 python sample.py --out_dir=$EXP15_DIR > $EXP15_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP15_DIR
-
-# Experiment 16: Recurrent Shared Weights with Learned Stopping
-echo "Running experiment 16: Recurrent Shared Weights with Learned Stopping"
-EXP16_DIR="out-gpt2-recurrent-shared-learned-stopping"
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-learned-stopping" --out_dir=$EXP16_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 16"
-python sample.py --out_dir=$EXP16_DIR > $EXP16_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP16_DIR
-
-# Experiment 17: Random 2D Recurrence (Flat) with Layer Dropout
-echo "Running experiment 17: Random 2D Recurrence (Flat) with Layer Dropout"
-EXP17_DIR="out-gpt2-random-2d-recurrence-flat-layer-dropout"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='flat' --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-flat-layer-dropout" --out_dir=$EXP17_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 17"
-python sample.py --out_dir=$EXP17_DIR > $EXP17_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP17_DIR
-
-# Experiment 18: Random 2D Recurrence (Flat) with Sticky Dropout
-echo "Running experiment 18: Random 2D Recurrence (Flat) with Sticky Dropout"
-EXP18_DIR="out-gpt2-random-2d-recurrence-flat-sticky-dropout"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='flat' --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-flat-sticky-dropout" --out_dir=$EXP18_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 18"
-python sample.py --out_dir=$EXP18_DIR > $EXP18_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP18_DIR
-
-# Experiment 19: Random 2D Recurrence (Flat) with Learned Stopping
-echo "Running experiment 19: Random 2D Recurrence (Flat) with Learned Stopping"
-EXP19_DIR="out-gpt2-random-2d-recurrence-flat-learned-stopping"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='flat' --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-flat-learned-stopping" --out_dir=$EXP19_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 19"
-python sample.py --out_dir=$EXP19_DIR > $EXP19_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP19_DIR
-
-# Experiment 20: Random 2D Recurrence (Hierarchical) with Layer Dropout
-echo "Running experiment 20: Random 2D Recurrence (Hierarchical) with Layer Dropout"
-EXP20_DIR="out-gpt2-random-2d-recurrence-hierarchical-layer-dropout"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical' --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-hierarchical-layer-dropout" --out_dir=$EXP20_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 20"
-python sample.py --out_dir=$EXP20_DIR > $EXP20_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP20_DIR
-
-# Experiment 21: Random 2D Recurrence (Hierarchical) with Sticky Dropout
-echo "Running experiment 21: Random 2D Recurrence (Hierarchical) with Sticky Dropout"
-EXP21_DIR="out-gpt2-random-2d-recurrence-hierarchical-sticky-dropout"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical' --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-hierarchical-sticky-dropout" --out_dir=$EXP21_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 21"
-python sample.py --out_dir=$EXP21_DIR > $EXP21_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP21_DIR
-
-# Experiment 22: Random 2D Recurrence (Hierarchical) with Learned Stopping
-echo "Running experiment 22: Random 2D Recurrence (Hierarchical) with Learned Stopping"
-EXP22_DIR="out-gpt2-random-2d-recurrence-hierarchical-learned-stopping"
-$TRAIN_CMD $CONFIG --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical' --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="random-2d-recurrence-hierarchical-learned-stopping" --out_dir=$EXP22_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 22"
-python sample.py --out_dir=$EXP22_DIR > $EXP22_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP22_DIR
-
-# Experiment 23: Recurrent Shared MoE with Layer Dropout
-echo "Running experiment 23: Recurrent Shared MoE with Layer Dropout"
-EXP23_DIR="out-gpt2-recurrent-shared-moe-layer-dropout"
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-layer-dropout" --out_dir=$EXP23_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 23"
-python sample.py --out_dir=$EXP23_DIR > $EXP23_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP23_DIR
-
-# Experiment 24: Recurrent Shared MoE with Sticky Dropout
-echo "Running experiment 24: Recurrent Shared MoE with Sticky Dropout"
-EXP24_DIR="out-gpt2-recurrent-shared-moe-sticky-dropout"
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-sticky-dropout" --out_dir=$EXP24_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 24"
-python sample.py --out_dir=$EXP24_DIR > $EXP24_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP24_DIR
-
-# Experiment 25: Recurrent Shared MoE with Learned Stopping
-echo "Running experiment 25: Recurrent Shared MoE with Learned Stopping"
-EXP25_DIR="out-gpt2-recurrent-shared-moe-learned-stopping"
-$TRAIN_CMD $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-learned-stopping" --out_dir=$EXP25_DIR --compile=False --batch_size=4
-echo "Sampling from experiment 25"
-python sample.py --out_dir=$EXP25_DIR > $EXP25_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP25_DIR
 
 echo "All experiments complete."

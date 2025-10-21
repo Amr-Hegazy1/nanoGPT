@@ -240,158 +240,6 @@ class MoE(nn.Module):
 
         return output
 
-class Random2DRecurrenceFlat(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.horizontal_block = Block(config)
-        self.vertical_block = Block(config)
-        self.verifier_block = Block(config)
-
-    def forward(self, x, model):
-        B, T, C = x.shape
-        active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
-        num_expanded_layers = 0
-
-        def apply_block(block, inp, current_mask):
-            nonlocal num_expanded_layers
-            active_indices = current_mask.nonzero(as_tuple=True)[0]
-            if active_indices.numel() == 0:
-                return inp, current_mask
-
-            x_active = inp[active_indices]
-
-            if model.layer_dropout > 0 and model.training:
-                x_active = model.layer_dropout_module(block, x_active)
-            else:
-                x_active = block(x_active)
-            
-            out = inp.clone()
-            out[active_indices] = x_active
-            num_expanded_layers += active_indices.numel() / B
-
-            new_mask = current_mask.clone()
-            if model.sticky_dropout > 0 and model.training:
-                drop_probs = torch.full((active_indices.numel(),), model.sticky_dropout, device=x.device)
-                drops = torch.bernoulli(drop_probs).bool()
-                new_mask.scatter_(0, active_indices[drops], False)
-            elif model.learned_stopping and model.training:
-                stop_logits = model.stop_predictor(x_active[:, -1, :]).squeeze(-1)
-                stop_probs = torch.sigmoid(stop_logits)
-                stops = torch.bernoulli(stop_probs).bool()
-                new_mask.scatter_(0, active_indices[stops], False)
-            
-            return out, new_mask
-
-        # Vertical expansion
-        num_vertical = torch.randint(1, 5, (1,)).item()
-        processed_levels = []
-        for _ in range(num_vertical):
-            level_output, active_mask = apply_block(self.vertical_block, x, active_mask)
-            
-            # Horizontal expansion
-            num_horizontal = torch.randint(1, 5, (1,)).item()
-            for _ in range(num_horizontal):
-                level_output, active_mask = apply_block(self.horizontal_block, level_output, active_mask)
-            
-            processed_levels.append(level_output)
-            
-        # Combine all processed levels
-        if not processed_levels:
-            combined_output = x
-        else:
-            combined_output = torch.stack(processed_levels).sum(dim=0)
-            
-        # Verifier block
-        num_verifier = torch.randint(1, 5, (1,)).item()
-        verified_output = combined_output
-        for _ in range(num_verifier):
-            verified_output, active_mask = apply_block(self.verifier_block, verified_output, active_mask)
-            
-        return verified_output, num_expanded_layers
-
-class Random2DRecurrenceHierarchical(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.horizontal_block = Block(config)
-        self.vertical_block = Block(config)
-        self.verifier_block = Block(config)
-
-    def forward(self, x, model):
-        B, T, C = x.shape
-        active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
-        num_expanded_layers = 0
-
-        def apply_block(block, inp, current_mask):
-            nonlocal num_expanded_layers
-            active_indices = current_mask.nonzero(as_tuple=True)[0]
-            if active_indices.numel() == 0:
-                return inp, current_mask
-
-            x_active = inp[active_indices]
-
-            if model.layer_dropout > 0 and model.training:
-                x_active = model.layer_dropout_module(block, x_active)
-            else:
-                x_active = block(x_active)
-            
-            out = inp.clone()
-            out[active_indices] = x_active
-            num_expanded_layers += active_indices.numel() / B
-
-            new_mask = current_mask.clone()
-            if model.sticky_dropout > 0 and model.training:
-                drop_probs = torch.full((active_indices.numel(),), model.sticky_dropout, device=x.device)
-                drops = torch.bernoulli(drop_probs).bool()
-                new_mask.scatter_(0, active_indices[drops], False)
-            elif model.learned_stopping and model.training:
-                stop_logits = model.stop_predictor(x_active[:, -1, :]).squeeze(-1)
-                stop_probs = torch.sigmoid(stop_logits)
-                stops = torch.bernoulli(stop_probs).bool()
-                new_mask.scatter_(0, active_indices[stops], False)
-            
-            return out, new_mask
-
-        # Vertical expansion
-        num_vertical = torch.randint(1, 5, (1,)).item()
-        processed_levels = []
-        for _ in range(num_vertical):
-            level_output, active_mask = apply_block(self.vertical_block, x, active_mask)
-            
-            # Horizontal expansion
-            num_horizontal = torch.randint(1, 5, (1,)).item()
-            for _ in range(num_horizontal):
-                level_output, active_mask = apply_block(self.horizontal_block, level_output, active_mask)
-            
-            processed_levels.append(level_output)
-            
-        # Hierarchical verification
-        verifying_levels = processed_levels
-        while len(verifying_levels) > 1:
-            next_level = []
-            for i in range(0, len(verifying_levels) - 1, 2):
-                t1 = verifying_levels[i]
-                t2 = verifying_levels[i+1]
-                combined = t1 + t2
-                
-                num_verifier_expansions = torch.randint(1, 5, (1,)).item()
-                verified = combined
-                for _ in range(num_verifier_expansions):
-                    verified, active_mask = apply_block(self.verifier_block, verified, active_mask)
-                    
-                next_level.append(verified)
-            
-            if len(verifying_levels) % 2 == 1:
-                next_level.append(verifying_levels[-1])
-                
-            verifying_levels = next_level
-
-        if verifying_levels:
-            final_output = verifying_levels[0]
-        else:
-            final_output = x
-            
-        return final_output, num_expanded_layers
-
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -412,9 +260,6 @@ class GPTConfig:
     moe_top_k: int = 2
     moe_hard_routing: bool = False
     share_moe_experts: bool = False
-    # 2D recurrence
-    enable_random_2d_recurrence: bool = False
-    random_2d_recurrence_type: str = 'flat' # 'flat' or 'hierarchical'
     scale_loss_by_n_layer: bool = False
     # new experiments
     layer_dropout: float = 0.0
@@ -438,20 +283,11 @@ class GPT(nn.Module):
         if self.learned_stopping:
             self.stop_predictor = nn.Linear(config.n_embd, 1)
 
-        self.random_2d_recurrence = None
-        if config.enable_random_2d_recurrence:
-            if config.random_2d_recurrence_type == 'flat':
-                self.random_2d_recurrence = Random2DRecurrenceFlat(config)
-            elif config.random_2d_recurrence_type == 'hierarchical':
-                self.random_2d_recurrence = Random2DRecurrenceHierarchical(config)
-            else:
-                raise ValueError(f"Unknown random_2d_recurrence_type: {config.random_2d_recurrence_type}")
-            h = nn.ModuleList()
-        else:
-            mlp_override = None
-            if config.moe and config.share_moe_experts:
-                mlp_override = MoE(config)
-            h = nn.ModuleList([Block(config, mlp_override=mlp_override) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)])
+        mlp_override = None
+        if config.moe and config.share_moe_experts:
+            mlp_override = MoE(config)
+        num_blocks = 1 if config.share_parameters_across_layers else config.n_layer
+        h = nn.ModuleList([Block(config, mlp_override=mlp_override) for _ in range(num_blocks)])
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -510,9 +346,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        if self.config.enable_random_2d_recurrence:
-            x, num_expanded_layers = self.random_2d_recurrence(x, self)
-        elif self.config.share_parameters_across_layers:
+        if self.config.share_parameters_across_layers:
             blk = self.transformer.h[0]
             
             # Determine the number of recurrent steps
