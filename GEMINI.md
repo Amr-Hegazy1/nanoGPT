@@ -55,8 +55,6 @@ The `run_experiments_gpt2.sh` script runs a series of experiments with different
 *   **Recurrent Shared Weights:** A model with recurrent shared weights.
 *   **MoE with Soft Routing:** A Mixture of Experts (MoE) model with soft routing.
 *   **MoE with Hard Routing:** A Mixture of Experts (MoE) model with hard routing.
-*   **Random 2D Recurrence (Flat):** A model with flat random 2D recurrence.
-*   **Random 2D Recurrence (Hierarchical):** A model with hierarchical random 2D recurrence.
 
 To run the experiments, execute the following command:
 
