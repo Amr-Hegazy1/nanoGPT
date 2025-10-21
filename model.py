@@ -10,10 +10,86 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
+from typing import Optional, Union, Callable
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
+class LayerDropout(torch.nn.Module):
+    """
+    A module that applies layer dropout to the input tensor of an underlying module.
+    It drops a portion of an input tensor, applies the underlying module on the
+    remaining parts of the tensor, and then concatenates with the dropped portion of the tensor.
+    When applied during training, it can have a regularization effect, and can potentially speedup training.
+
+    Args:
+        prob (float): The probability of dropping an input. Defaults to 0.0.
+        dim (Optional[int]): The dimension of input tensor along which to drop layers. Defaults to 0 (i.e., batch size).
+        disable_on_eval (Optional[bool]): Whether to disable layer dropout during evaluation. Defaults to True.
+        seed (Optional[int]): The seed for the random number generator. Defaults to None.
+    """
+
+    def __init__(
+        self,
+        prob: float = 0.0,
+        dim: Optional[int] = 0,
+        disable_on_eval: Optional[bool] = True,
+        seed: Optional[int] = None,
+    ):
+        super().__init__()
+        self.prob: float = prob
+        self.dim = dim
+        self.disable_on_eval: bool = disable_on_eval
+        self.generator = torch.Generator(device="cpu")
+        self.inferred: float = None
+
+        if seed is not None:
+            self.generator.manual_seed(seed)
+
+    def forward(
+        self,
+        function: Union[Callable, torch.nn.Module],
+        input: torch.Tensor,
+        *args,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        Apply layer dropout to the input tensor.
+
+        Args:
+            function (Union[Callable, torch.nn.Module]): The function or module to apply to the input tensor.
+            input (torch.Tensor): The input tensor.
+            *args: Additional positional arguments passed to the function.
+            **kwargs: Additional keyword arguments passed to the function.
+        Returns:
+            torch.Tensor: The output tensor after applying layer dropout.
+        """
+        n = input.shape[self.dim]
+
+        if self.prob == 0 or (self.disable_on_eval and self.training is False):
+            self.inferred = 1.0
+            return function(input, *args, **kwargs)
+
+        skip = (
+            torch.bernoulli(torch.Tensor((n) * [self.prob]), generator=self.generator)
+            .to(input.device)
+            .to(input.dtype)
+        )
+        self.inferred = 1 - torch.mean(skip)
+        ind_selected = (skip == 0).nonzero().squeeze()
+
+        if ind_selected.numel() > 0:
+            x_selected = torch.index_select(input, self.dim, ind_selected)
+            out_selected = function(x_selected, *args, **kwargs)
+
+        out = input.clone()
+        assert (
+            self.dim == 0
+        ), "Currently only supporting dropping elements along the 0th dimension"
+        if ind_selected.numel() > 0:
+            out[ind_selected] = out_selected
+        return out
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -93,12 +169,14 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, mlp_override=None):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        if config.moe:
+        if mlp_override:
+            self.mlp = mlp_override
+        elif config.moe:
             self.mlp = MoE(config)
         else:
             self.mlp = MLP(config)
@@ -169,19 +247,51 @@ class Random2DRecurrenceFlat(nn.Module):
         self.vertical_block = Block(config)
         self.verifier_block = Block(config)
 
-    def forward(self, x):
-        # Vertical expansion: Create a random number of levels
+    def forward(self, x, model):
+        B, T, C = x.shape
+        active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
+        num_expanded_layers = 0
+
+        def apply_block(block, inp, current_mask):
+            nonlocal num_expanded_layers
+            active_indices = current_mask.nonzero(as_tuple=True)[0]
+            if active_indices.numel() == 0:
+                return inp, current_mask
+
+            x_active = inp[active_indices]
+
+            if model.layer_dropout > 0 and model.training:
+                x_active = model.layer_dropout_module(block, x_active)
+            else:
+                x_active = block(x_active)
+            
+            out = inp.clone()
+            out[active_indices] = x_active
+            num_expanded_layers += active_indices.numel() / B
+
+            new_mask = current_mask.clone()
+            if model.sticky_dropout > 0 and model.training:
+                drop_probs = torch.full((active_indices.numel(),), model.sticky_dropout, device=x.device)
+                drops = torch.bernoulli(drop_probs).bool()
+                new_mask.scatter_(0, active_indices[drops], False)
+            elif model.learned_stopping and model.training:
+                stop_logits = model.stop_predictor(x_active[:, -1, :]).squeeze(-1)
+                stop_probs = torch.sigmoid(stop_logits)
+                stops = torch.bernoulli(stop_probs).bool()
+                new_mask.scatter_(0, active_indices[stops], False)
+            
+            return out, new_mask
+
+        # Vertical expansion
         num_vertical = torch.randint(1, 5, (1,)).item()
-        
         processed_levels = []
         for _ in range(num_vertical):
-            # Each level starts from the original input x and is processed by the vertical_block once
-            level_output = self.vertical_block(x)
+            level_output, active_mask = apply_block(self.vertical_block, x, active_mask)
             
-            # Horizontal expansion for each level with a different random number of times
+            # Horizontal expansion
             num_horizontal = torch.randint(1, 5, (1,)).item()
             for _ in range(num_horizontal):
-                level_output = self.horizontal_block(level_output)
+                level_output, active_mask = apply_block(self.horizontal_block, level_output, active_mask)
             
             processed_levels.append(level_output)
             
@@ -191,13 +301,13 @@ class Random2DRecurrenceFlat(nn.Module):
         else:
             combined_output = torch.stack(processed_levels).sum(dim=0)
             
-        # Verifier block with its own horizontal expansion
+        # Verifier block
         num_verifier = torch.randint(1, 5, (1,)).item()
         verified_output = combined_output
         for _ in range(num_verifier):
-            verified_output = self.verifier_block(verified_output)
+            verified_output, active_mask = apply_block(self.verifier_block, verified_output, active_mask)
             
-        return verified_output
+        return verified_output, num_expanded_layers
 
 class Random2DRecurrenceHierarchical(nn.Module):
     def __init__(self, config):
@@ -206,19 +316,51 @@ class Random2DRecurrenceHierarchical(nn.Module):
         self.vertical_block = Block(config)
         self.verifier_block = Block(config)
 
-    def forward(self, x):
-        # Vertical expansion: Create a random number of levels
+    def forward(self, x, model):
+        B, T, C = x.shape
+        active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
+        num_expanded_layers = 0
+
+        def apply_block(block, inp, current_mask):
+            nonlocal num_expanded_layers
+            active_indices = current_mask.nonzero(as_tuple=True)[0]
+            if active_indices.numel() == 0:
+                return inp, current_mask
+
+            x_active = inp[active_indices]
+
+            if model.layer_dropout > 0 and model.training:
+                x_active = model.layer_dropout_module(block, x_active)
+            else:
+                x_active = block(x_active)
+            
+            out = inp.clone()
+            out[active_indices] = x_active
+            num_expanded_layers += active_indices.numel() / B
+
+            new_mask = current_mask.clone()
+            if model.sticky_dropout > 0 and model.training:
+                drop_probs = torch.full((active_indices.numel(),), model.sticky_dropout, device=x.device)
+                drops = torch.bernoulli(drop_probs).bool()
+                new_mask.scatter_(0, active_indices[drops], False)
+            elif model.learned_stopping and model.training:
+                stop_logits = model.stop_predictor(x_active[:, -1, :]).squeeze(-1)
+                stop_probs = torch.sigmoid(stop_logits)
+                stops = torch.bernoulli(stop_probs).bool()
+                new_mask.scatter_(0, active_indices[stops], False)
+            
+            return out, new_mask
+
+        # Vertical expansion
         num_vertical = torch.randint(1, 5, (1,)).item()
-        
         processed_levels = []
         for _ in range(num_vertical):
-            # Each level starts from the original input x and is processed by the vertical_block once
-            level_output = self.vertical_block(x)
+            level_output, active_mask = apply_block(self.vertical_block, x, active_mask)
             
-            # Horizontal expansion for each level with a different random number of times
+            # Horizontal expansion
             num_horizontal = torch.randint(1, 5, (1,)).item()
             for _ in range(num_horizontal):
-                level_output = self.horizontal_block(level_output)
+                level_output, active_mask = apply_block(self.horizontal_block, level_output, active_mask)
             
             processed_levels.append(level_output)
             
@@ -226,21 +368,18 @@ class Random2DRecurrenceHierarchical(nn.Module):
         verifying_levels = processed_levels
         while len(verifying_levels) > 1:
             next_level = []
-            # process in pairs
             for i in range(0, len(verifying_levels) - 1, 2):
                 t1 = verifying_levels[i]
                 t2 = verifying_levels[i+1]
                 combined = t1 + t2
                 
-                # Apply verifier block with horizontal expansion
                 num_verifier_expansions = torch.randint(1, 5, (1,)).item()
                 verified = combined
                 for _ in range(num_verifier_expansions):
-                    verified = self.verifier_block(verified)
+                    verified, active_mask = apply_block(self.verifier_block, verified, active_mask)
                     
                 next_level.append(verified)
             
-            # if there is an odd one out, just append it
             if len(verifying_levels) % 2 == 1:
                 next_level.append(verifying_levels[-1])
                 
@@ -251,7 +390,7 @@ class Random2DRecurrenceHierarchical(nn.Module):
         else:
             final_output = x
             
-        return final_output
+        return final_output, num_expanded_layers
 
 @dataclass
 class GPTConfig:
@@ -272,9 +411,15 @@ class GPTConfig:
     moe_num_experts: int = 4
     moe_top_k: int = 2
     moe_hard_routing: bool = False
+    share_moe_experts: bool = False
     # 2D recurrence
     enable_random_2d_recurrence: bool = False
     random_2d_recurrence_type: str = 'flat' # 'flat' or 'hierarchical'
+    scale_loss_by_n_layer: bool = False
+    # new experiments
+    layer_dropout: float = 0.0
+    sticky_dropout: float = 0.0
+    learned_stopping: bool = False
 
 class GPT(nn.Module):
 
@@ -283,6 +428,15 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
+
+        # new attributes for experiments
+        self.layer_dropout = config.layer_dropout
+        if self.layer_dropout > 0:
+            self.layer_dropout_module = LayerDropout(prob=self.layer_dropout)
+        self.sticky_dropout = config.sticky_dropout
+        self.learned_stopping = config.learned_stopping
+        if self.learned_stopping:
+            self.stop_predictor = nn.Linear(config.n_embd, 1)
 
         self.random_2d_recurrence = None
         if config.enable_random_2d_recurrence:
@@ -294,7 +448,10 @@ class GPT(nn.Module):
                 raise ValueError(f"Unknown random_2d_recurrence_type: {config.random_2d_recurrence_type}")
             h = nn.ModuleList()
         else:
-            h = nn.ModuleList([Block(config) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)])
+            mlp_override = None
+            if config.moe and config.share_moe_experts:
+                mlp_override = MoE(config)
+            h = nn.ModuleList([Block(config, mlp_override=mlp_override) for _ in range(1 if config.share_parameters_across_layers else config.n_layer)])
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -346,13 +503,15 @@ class GPT(nn.Module):
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
+        num_expanded_layers = None
+
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
 
         if self.config.enable_random_2d_recurrence:
-            x = self.random_2d_recurrence(x)
+            x, num_expanded_layers = self.random_2d_recurrence(x, self)
         elif self.config.share_parameters_across_layers:
             blk = self.transformer.h[0]
             
@@ -363,8 +522,62 @@ class GPT(nn.Module):
             else:
                 num_layers = self.config.n_layer
 
-            for _ in range(num_layers):
-                x = blk(x)
+            if self.sticky_dropout > 0 and self.training:
+                B = x.shape[0]
+                active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
+                num_expanded_layers = 0
+                for _ in range(num_layers):
+                    active_indices = active_mask.nonzero(as_tuple=True)[0]
+                    if active_indices.numel() == 0:
+                        break
+                    
+                    x_active = x[active_indices]
+                    
+                    if self.layer_dropout > 0:
+                        x_active = self.layer_dropout_module(blk, x_active)
+                    else:
+                        x_active = blk(x_active)
+                    
+                    x[active_indices] = x_active
+                    num_expanded_layers += active_indices.numel() / B
+
+                    # update mask for sticky dropout
+                    drop_probs = torch.full((active_indices.numel(),), self.sticky_dropout, device=x.device)
+                    drops = torch.bernoulli(drop_probs).bool()
+                    active_mask.scatter_(0, active_indices[drops], False)
+
+            elif self.learned_stopping and self.training:
+                B = x.shape[0]
+                active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
+                num_expanded_layers = 0
+                for _ in range(num_layers):
+                    active_indices = active_mask.nonzero(as_tuple=True)[0]
+                    if active_indices.numel() == 0:
+                        break
+
+                    x_active = x[active_indices]
+
+                    if self.layer_dropout > 0:
+                        x_active = self.layer_dropout_module(blk, x_active)
+                    else:
+                        x_active = blk(x_active)
+                    
+                    x[active_indices] = x_active
+                    num_expanded_layers += active_indices.numel() / B
+
+                    # update mask for learned stopping
+                    stop_logits = self.stop_predictor(x_active[:, -1, :]).squeeze(-1)
+                    stop_probs = torch.sigmoid(stop_logits)
+                    stops = torch.bernoulli(stop_probs).bool()
+                    active_mask.scatter_(0, active_indices[stops], False)
+            else:
+                # original logic + layer_dropout
+                num_expanded_layers = num_layers
+                for _ in range(num_layers):
+                    if self.layer_dropout > 0 and self.training:
+                        x = self.layer_dropout_module(blk, x)
+                    else:
+                        x = blk(x)
         else: # Baseline
             for block in self.transformer.h:
                 x = block(x)
@@ -380,7 +593,7 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        return logits, loss, num_expanded_layers
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -503,7 +716,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond, n=n)
+            logits, _, _ = self(idx_cond, n=n)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options

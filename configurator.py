@@ -19,13 +19,23 @@ from ast import literal_eval
 
 for arg in sys.argv[1:]:
     if '=' not in arg:
-        # assume it's the name of a config file
-        assert not arg.startswith('--')
-        config_file = arg
-        print(f"Overriding config with {config_file}:")
-        with open(config_file) as f:
-            print(f.read())
-        exec(open(config_file).read())
+        if not arg.startswith('--'):
+            # assume it's the name of a config file
+            config_file = arg
+            print(f"Overriding config with {config_file}:")
+            with open(config_file) as f:
+                print(f.read())
+            exec(open(config_file).read())
+        else:
+            # assume it's a boolean flag
+            key = arg[2:]
+            if key in globals():
+                # if the key is already in globals(), it must be a boolean
+                assert type(globals()[key]) == bool, f'Cannot use flag for non-boolean key {key}'
+                print(f"Overriding: {key} = True")
+                globals()[key] = True
+            else:
+                raise ValueError(f"Unknown config key: {key}")
     else:
         # assume it's a --key=value argument
         assert arg.startswith('--')
@@ -39,7 +49,7 @@ for arg in sys.argv[1:]:
                 # if that goes wrong, just use the string
                 attempt = val
             # ensure the types match ok
-            assert type(attempt) == type(globals()[key])
+            assert type(attempt) == type(globals()[key]), f'Type mismatch for key {key}: expected {type(globals()[key])} but got {type(attempt)}'
             # cross fingers
             print(f"Overriding: {key} = {attempt}")
             globals()[key] = attempt
