@@ -73,7 +73,7 @@ lol  `¯\_(ツ)_/¯`. Not bad for a character-level model after 3 minutes of tra
 
 ## Logging
 
-This repository supports logging to both [Weights & Biases](https://wandb.ai/) and [TensorBoard](https://www.tensorflow.org/tensorboard) for monitoring and comparing experiments.
+This repository supports logging to both [Weights & Biases](https://wandb.ai/) and [TensorBoard](https://www.tensorflow.org/tensorboard) for monitoring and comparing experiments. In addition to the loss, the perplexity is also logged to Weights & Biases.
 
 -   **Weights & Biases:** Enable by adding the `--wandb_log=True` flag to your `train.py` command. You can also specify a project and run name with `--wandb_project` and `--wandb_run_name`.
 -   **TensorBoard:** Enable by adding the `--tensorboard_log=True` flag. The TensorBoard logs will be saved in the `out_dir`. You can view them by running `tensorboard --logdir out_dir` (replace `out_dir` with your output directory).
@@ -217,6 +217,10 @@ You can share a single Transformer block’s parameters across all layers (ALBER
 
 This experiment allows you to reuse a single shared transformer block `n` times. `n` is sampled from a log-normal distribution during training, and can be set manually during inference. This allows for a dynamic depth during training.
 
+*   **Loss Scaling:** The loss can be scaled by the number of expanded layers using the `--scale_loss_by_n_layer` flag. This can be useful for stabilizing training when using a variable number of layers.
+
+*   **Validation Loss Plot:** After training a model with recurrent shared weights, a plot of the validation loss versus the number of expanded layers is generated and saved to the output directory. This can help visualize the effect of the number of layers on the model's performance.
+
 *   **How to use:**
     *   To enable this during training, use the following flags:
         ```bash
@@ -245,9 +249,23 @@ This experiment implements a Mixture of Experts (MoE) model. At each layer, a ro
     *   You can set the number of top experts to use with `--moe_top_k=<value>` (default is 2).
     *   To use hard routing, add the `--moe_hard_routing=True` flag.
 
+### Shared MoE (Experimental)
+
+This experiment allows you to share the same set of experts across all layers of the model. This can significantly reduce the number of parameters and memory usage, especially for models with a large number of experts.
+
+*   **How to use:**
+    *   To enable shared MoE during training, use the following flags:
+        ```bash
+        python train.py --moe=True --share_moe_experts=True
+        ```
+
 ### Random 2D Recurrence (Experimental)
 
 This experiment implements a novel recurrent block that operates in two dimensions with random recurrence counts. It comes in two flavors: `flat` and `hierarchical`.
+
+*   **Loss Scaling:** The loss can be scaled by the number of expanded layers using the `--scale_loss_by_n_layer` flag. This can be useful for stabilizing training when using a variable number of layers.
+
+*   **Validation Loss Plot:** After training a model with random 2D recurrence, a plot of the validation loss versus the number of expanded layers is generated and saved to the output directory. This can help visualize the effect of the number of layers on the model's performance.
 
 *   The block consists of three sub-blocks: a horizontal recurrent block, a vertical recurrent block, and a verifier block.
 *   The input is first expanded vertically a random number of times to create "levels".
@@ -269,6 +287,39 @@ This experiment implements a novel recurrent block that operates in two dimensio
         # For hierarchical recurrence
         python train.py --enable_random_2d_recurrence=True --random_2d_recurrence_type='hierarchical'
         ```
+
+### Layer Dropout (Experimental)
+
+This experiment applies dropout to entire layers within a recurrent block. It can be used as a form of regularization.
+
+*   **How to use:**
+    *   To enable Layer Dropout during training, use the following flag with a recurrent model:
+        ```bash
+        python train.py --recurrent_shared_weights=True --layer_dropout=<prob>
+        ```
+    *   `<prob>` is the probability of dropping a layer (e.g., 0.1).
+
+### Sticky Dropout (Experimental)
+
+In a recurrent setting, this experiment implements a "sticky" dropout where once a sequence in a batch is "dropped," it remains dropped for all subsequent recurrent steps. This can be used to simulate sequences "finishing" at different times.
+
+*   **How to use:**
+    *   To enable Sticky Dropout during training, use the following flag with a recurrent model:
+        ```bash
+        python train.py --recurrent_shared_weights=True --sticky_dropout=<prob>
+        ```
+    *   `<prob>` is the probability of dropping a sequence at each recurrent step (e.g., 0.1).
+
+### Learned Stopping (Experimental)
+
+This experiment introduces a simple MLP that learns to predict when to stop processing a sequence in a recurrent model. This is a more advanced form of adaptive computation.
+
+*   **How to use:**
+    *   To enable Learned Stopping during training, use the following flag with a recurrent model:
+        ```bash
+        python train.py --recurrent_shared_weights=True --learned_stopping=True
+        ```
+*   **Note:** The mechanism is in place, but the training of the stopping predictor is non-trivial and may require further adjustments to the loss function or training procedure for optimal performance.
 
 
 ## efficiency notes
