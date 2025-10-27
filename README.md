@@ -217,9 +217,15 @@ You can share a single Transformer block’s parameters across all layers (ALBER
 
 This experiment allows you to reuse a single shared transformer block `n` times. `n` is sampled from a log-normal distribution during training, and can be set manually during inference. This allows for a dynamic depth during training.
 
-*   **Loss Scaling:** The loss can be scaled by the number of expanded layers using the `--scale_loss_by_n_layer` flag. This can be useful for stabilizing training when using a variable number of layers.
+*   **Loss Scaling:** The loss can be scaled by the number of expanded layers using the `--scale_loss_by_n_layer` flag. When this switch is active, recurrent depths are sampled uniformly between 1 and `--recurrent_depth`, yielding a consistent range of layer counts.
 
 *   **Validation Loss Plot:** After training a model with recurrent shared weights, a plot of the validation loss versus the number of expanded layers is generated and saved to the output directory. This can help visualize the effect of the number of layers on the model's performance.
+
+*   **Fixed Edge Blocks:** Use `--fixed_edge_blocks=True` to keep the first and last Transformer blocks unshared while looping a single shared block in the middle of the network.
+
+*   **Recurrent Noise:** Inject noise before each shared layer with `--recurrent_noise_mode=add|concat`, combining it with `--recurrent_noise_std=<float>` (and `--recurrent_noise_concat_dim=<int>` when concatenating).
+
+*   **Extra LayerNorm:** Activate `--recurrent_extra_layernorm=True` to append an additional LayerNorm after every shared recurrence step.
 
 *   **How to use:**
     *   To enable this during training, use the following flags:
@@ -283,14 +289,20 @@ In a recurrent setting, this experiment implements a "sticky" dropout where once
 
 ### Learned Stopping (Experimental)
 
-This experiment introduces a simple MLP that learns to predict when to stop processing a sequence in a recurrent model. This is a more advanced form of adaptive computation.
+This experiment introduces a differentiable gating head that blends the shared block output with the current hidden state, allowing the model to *learn* an expected recursion depth. The gate is supervised with optional controller and entropy regularizers inspired by skip-middle and Mixture-of-Recursions.
 
 *   **How to use:**
-    *   To enable Learned Stopping during training, use the following flag with a recurrent model:
+    *   Enable the head with:
         ```bash
         python train.py --recurrent_shared_weights=True --learned_stopping=True
         ```
-*   **Note:** The mechanism is in place, but the training of the stopping predictor is non-trivial and may require further adjustments to the loss function or training procedure for optimal performance.
+    *   Optionally stabilise training with
+        *   `--learned_stopping_warmup_steps=1000` to keep the gate closed for early iterations.
+        *   `--learned_stopping_controller_weight=0.1` and `--learned_stopping_target_depth=<float>` to keep the expected depth near a desired value (defaults to the uniform baseline when unspecified).
+        *   `--learned_stopping_entropy_weight=0.01` to encourage high-entropy exit distributions.
+        *   `--learned_stopping_temperature` and `--learned_stopping_min_prob` to tune the smoothness of the gate.
+        *   `--learned_stopping_use_threshold=True --learned_stopping_threshold=0.6` to snap the gate to a hard decision at evaluation time.
+*   **Logging:** When enabled, the training loop logs `mean_depth`, controller loss, entropy, and the instantaneous target depth so you can track convergence of the learned policy.
 
 
 ## efficiency notes

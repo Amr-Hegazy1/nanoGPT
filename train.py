@@ -30,14 +30,18 @@ from torch.distributed import init_process_group, destroy_process_group
 from model import GPTConfig, GPT
 
 # ---- Recurrent Shared Weights Sampling ----
-def sample_recurrent_depth():
-    # Samples from a log-normal distribution with params to match user's request
-    # mean=32, median=29, mode=24. min=1, max=100
-    # mu=ln(29)=3.367, sigma=sqrt(ln(29)-ln(24))=0.435
+def sample_recurrent_depth(max_depth, scale_loss_by_n_layer=False, min_depth=1):
+    """Sample the number of recurrent steps to expand."""
+    if max_depth < min_depth:
+        raise ValueError(f"max_depth ({max_depth}) must be >= min_depth ({min_depth})")
+    if scale_loss_by_n_layer:
+        return np.random.randint(min_depth, max_depth + 1)
+    # Samples from a log-normal distribution with params to match prior behaviour:
+    # mean=32, median=29, mode=24. min=1, max=max_depth (default 32, legacy capped at 100)
     mu = 3.367
     sigma = 0.435
     sample = np.random.lognormal(mu, sigma)
-    return np.clip(int(round(sample)), 1, 100)
+    return int(np.clip(round(sample), min_depth, max_depth))
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -79,6 +83,20 @@ scale_loss_by_n_layer = False
 layer_dropout = 0.0
 sticky_dropout = 0.0
 learned_stopping = False
+learned_stopping_warmup_steps = 0
+learned_stopping_controller_weight = 0.0
+learned_stopping_entropy_weight = 0.0
+learned_stopping_target_depth = None
+learned_stopping_temperature = 1.0
+learned_stopping_min_prob = 1e-4
+learned_stopping_use_threshold = False
+learned_stopping_threshold = 0.5
+fixed_edge_blocks = False
+use_rmsnorm = False
+recurrent_noise_mode = 'none'
+recurrent_noise_std = 0.0
+recurrent_noise_concat_dim = None
+recurrent_extra_layernorm = False
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -99,6 +117,9 @@ dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
+for optional_key in ['learned_stopping_target_depth']:
+    if optional_key not in config_keys and optional_key in globals():
+        config_keys.append(optional_key)
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
@@ -179,7 +200,21 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   recurrent_depth=recurrent_depth,
                   moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing, share_moe_experts=share_moe_experts,
                   scale_loss_by_n_layer=scale_loss_by_n_layer,
-                  layer_dropout=layer_dropout, sticky_dropout=sticky_dropout, learned_stopping=learned_stopping)
+                  layer_dropout=layer_dropout, sticky_dropout=sticky_dropout, learned_stopping=learned_stopping,
+                  learned_stopping_warmup_steps=learned_stopping_warmup_steps,
+                  learned_stopping_controller_weight=learned_stopping_controller_weight,
+                  learned_stopping_entropy_weight=learned_stopping_entropy_weight,
+                  learned_stopping_target_depth=learned_stopping_target_depth,
+                  learned_stopping_temperature=learned_stopping_temperature,
+                  learned_stopping_min_prob=learned_stopping_min_prob,
+                  learned_stopping_use_threshold=learned_stopping_use_threshold,
+                  learned_stopping_threshold=learned_stopping_threshold,
+                  fixed_edge_blocks=fixed_edge_blocks,
+                  use_rmsnorm=use_rmsnorm,
+                  recurrent_noise_mode=recurrent_noise_mode,
+                  recurrent_noise_std=recurrent_noise_std,
+                  recurrent_noise_concat_dim=recurrent_noise_concat_dim,
+                  recurrent_extra_layernorm=recurrent_extra_layernorm)
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -223,6 +258,34 @@ elif init_from == 'resume':
         model_args['sticky_dropout'] = checkpoint_model_args['sticky_dropout']
     if 'learned_stopping' in checkpoint_model_args:
         model_args['learned_stopping'] = checkpoint_model_args['learned_stopping']
+    if 'learned_stopping_warmup_steps' in checkpoint_model_args:
+        model_args['learned_stopping_warmup_steps'] = checkpoint_model_args['learned_stopping_warmup_steps']
+    if 'learned_stopping_controller_weight' in checkpoint_model_args:
+        model_args['learned_stopping_controller_weight'] = checkpoint_model_args['learned_stopping_controller_weight']
+    if 'learned_stopping_entropy_weight' in checkpoint_model_args:
+        model_args['learned_stopping_entropy_weight'] = checkpoint_model_args['learned_stopping_entropy_weight']
+    if 'learned_stopping_target_depth' in checkpoint_model_args:
+        model_args['learned_stopping_target_depth'] = checkpoint_model_args['learned_stopping_target_depth']
+    if 'learned_stopping_temperature' in checkpoint_model_args:
+        model_args['learned_stopping_temperature'] = checkpoint_model_args['learned_stopping_temperature']
+    if 'learned_stopping_min_prob' in checkpoint_model_args:
+        model_args['learned_stopping_min_prob'] = checkpoint_model_args['learned_stopping_min_prob']
+    if 'learned_stopping_use_threshold' in checkpoint_model_args:
+        model_args['learned_stopping_use_threshold'] = checkpoint_model_args['learned_stopping_use_threshold']
+    if 'learned_stopping_threshold' in checkpoint_model_args:
+        model_args['learned_stopping_threshold'] = checkpoint_model_args['learned_stopping_threshold']
+    if 'fixed_edge_blocks' in checkpoint_model_args:
+        model_args['fixed_edge_blocks'] = checkpoint_model_args['fixed_edge_blocks']
+    if 'use_rmsnorm' in checkpoint_model_args:
+        model_args['use_rmsnorm'] = checkpoint_model_args['use_rmsnorm']
+    if 'recurrent_noise_mode' in checkpoint_model_args:
+        model_args['recurrent_noise_mode'] = checkpoint_model_args['recurrent_noise_mode']
+    if 'recurrent_noise_std' in checkpoint_model_args:
+        model_args['recurrent_noise_std'] = checkpoint_model_args['recurrent_noise_std']
+    if 'recurrent_noise_concat_dim' in checkpoint_model_args:
+        model_args['recurrent_noise_concat_dim'] = checkpoint_model_args['recurrent_noise_concat_dim']
+    if 'recurrent_extra_layernorm' in checkpoint_model_args:
+        model_args['recurrent_extra_layernorm'] = checkpoint_model_args['recurrent_extra_layernorm']
     # create the model
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -256,6 +319,20 @@ elif init_from.startswith('gpt2'):
     model_args['layer_dropout'] = getattr(model.config, 'layer_dropout', 0.0)
     model_args['sticky_dropout'] = getattr(model.config, 'sticky_dropout', 0.0)
     model_args['learned_stopping'] = getattr(model.config, 'learned_stopping', False)
+    model_args['learned_stopping_warmup_steps'] = getattr(model.config, 'learned_stopping_warmup_steps', 0)
+    model_args['learned_stopping_controller_weight'] = getattr(model.config, 'learned_stopping_controller_weight', 0.0)
+    model_args['learned_stopping_entropy_weight'] = getattr(model.config, 'learned_stopping_entropy_weight', 0.0)
+    model_args['learned_stopping_target_depth'] = getattr(model.config, 'learned_stopping_target_depth', None)
+    model_args['learned_stopping_temperature'] = getattr(model.config, 'learned_stopping_temperature', 1.0)
+    model_args['learned_stopping_min_prob'] = getattr(model.config, 'learned_stopping_min_prob', 1e-4)
+    model_args['learned_stopping_use_threshold'] = getattr(model.config, 'learned_stopping_use_threshold', False)
+    model_args['learned_stopping_threshold'] = getattr(model.config, 'learned_stopping_threshold', 0.5)
+    model_args['fixed_edge_blocks'] = getattr(model.config, 'fixed_edge_blocks', False)
+    model_args['use_rmsnorm'] = getattr(model.config, 'use_rmsnorm', False)
+    model_args['recurrent_noise_mode'] = getattr(model.config, 'recurrent_noise_mode', 'none')
+    model_args['recurrent_noise_std'] = getattr(model.config, 'recurrent_noise_std', 0.0)
+    model_args['recurrent_noise_concat_dim'] = getattr(model.config, 'recurrent_noise_concat_dim', None)
+    model_args['recurrent_extra_layernorm'] = getattr(model.config, 'recurrent_extra_layernorm', False)
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)
@@ -377,7 +454,7 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            n = sample_recurrent_depth() if recurrent_shared_weights else None
+            n = sample_recurrent_depth(recurrent_depth, scale_loss_by_n_layer) if recurrent_shared_weights else None
             logits, loss, num_expanded_layers = model(X, Y, n=n)
             if scale_loss_by_n_layer and num_expanded_layers is not None:
                 if n is not None and n > 0:
@@ -417,6 +494,39 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+
+        if wandb_log:
+            log_dict = {
+                "iter": iter_num,
+                "train/loss": lossf,
+                "lr": lr,
+                "mfu": running_mfu*100, # convert to percentage
+            }
+            # Add stopping metrics if they exist
+            stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
+            if stopping_metrics:
+                log_dict.update({f"train/stopping/{k}": v for k, v in stopping_metrics.items()})
+            
+            attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
+            if attentive_stopping_metrics:
+                log_dict.update({f"train/attentive_stopping/{k}": v for k, v in attentive_stopping_metrics.items()})
+
+            wandb.log(log_dict)
+
+        if tensorboard_log:
+            writer.add_scalar('train/loss', lossf, iter_num)
+            writer.add_scalar('lr', lr, iter_num)
+            writer.add_scalar('mfu', running_mfu*100, iter_num)
+            # Add stopping metrics if they exist
+            stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
+            if stopping_metrics:
+                for k, v in stopping_metrics.items():
+                    writer.add_scalar(f"train/stopping/{k}", v, iter_num)
+            attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
+            if attentive_stopping_metrics:
+                for k, v in attentive_stopping_metrics.items():
+                    writer.add_scalar(f"train/attentive_stopping/{k}", v, iter_num)
+
     iter_num += 1
     local_iter_num += 1
 
