@@ -4,6 +4,8 @@
 CONFIG="config/train_shakespeare_char.py"
 WANDB_PROJECT="nanoGPT-experiments-shakespeare"
 
+# --- Base Experiments ---
+
 # Experiment 1: Baseline
 echo "Running experiment 1: Baseline"
 EXP1_DIR="out-shakespeare-char-baseline"
@@ -26,6 +28,8 @@ echo "Sampling from experiment 3"
 python sample.py --out_dir=$EXP3_DIR > $EXP3_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP3_DIR
 
+# --- MoE Experiments ---
+
 # Experiment 4: MoE with Soft Routing
 echo "Running experiment 4: MoE with Soft Routing"
 EXP4_DIR="out-shakespeare-char-moe-soft-routing"
@@ -47,76 +51,85 @@ python train.py $CONFIG --moe=True --share_moe_experts=True --wandb_log=True --w
 echo "Sampling from experiment 6"
 python sample.py --out_dir=$EXP6_DIR > $EXP6_DIR/samples.txt
 
-# Experiment 7: Recurrent Shared Weights with loss scaling
-echo "Running experiment 7: Recurrent Shared Weights with loss scaling"
-EXP7_DIR="out-shakespeare-char-recurrent-shared-loss-scaling"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-loss-scaling" --out_dir=$EXP7_DIR --compile=False --batch_size=24
-echo "Sampling from experiment 7"
+# --- Recurrent Shared Weights Experiments (Isolated Features) ---
+
+# Base for this section: Recurrent Shared Weights (like Exp 3)
+BASE_RECURRENT_ARGS="$CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=24"
+
+# Experiment 7: Recurrent Shared Weights with Layer Dropout
+echo "Running experiment 7: Recurrent Shared Weights with Layer Dropout"
+EXP7_DIR="out-shakespeare-char-recurrent-layer-dropout"
+python train.py $BASE_RECURRENT_ARGS --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-layer-dropout" --out_dir=$EXP7_DIR
 python sample.py --out_dir=$EXP7_DIR > $EXP7_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP7_DIR
 
-# Experiment 8: Recurrent Shared MoE
-echo "Running experiment 8: Recurrent Shared MoE"
-EXP8_DIR="out-shakespeare-char-recurrent-shared-moe"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe" --out_dir=$EXP8_DIR --compile=False --batch_size=12
-echo "Sampling from experiment 8"
+# Experiment 8: Recurrent Shared Weights with Layer Dropout + Loss Scaling
+echo "Running experiment 8: Recurrent Shared Weights with Layer Dropout + Loss Scaling"
+EXP8_DIR="out-shakespeare-char-recurrent-layer-dropout-loss-scaling"
+python train.py $BASE_RECURRENT_ARGS --layer_dropout=0.1 --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-layer-dropout-loss-scaling" --out_dir=$EXP8_DIR
 python sample.py --out_dir=$EXP8_DIR > $EXP8_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP8_DIR
 
-# Experiment 9: Recurrent Shared MoE with loss scaling
-echo "Running experiment 9: Recurrent Shared MoE with loss scaling"
-EXP9_DIR="out-shakespeare-char-recurrent-shared-moe-loss-scaling"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-loss-scaling" --out_dir=$EXP9_DIR --compile=False --batch_size=12
-echo "Sampling from experiment 9"
+# Experiment 9: Recurrent Shared Weights with Sticky Dropout
+echo "Running experiment 9: Recurrent Shared Weights with Sticky Dropout"
+EXP9_DIR="out-shakespeare-char-recurrent-sticky-dropout"
+python train.py $BASE_RECURRENT_ARGS --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sticky-dropout" --out_dir=$EXP9_DIR
 python sample.py --out_dir=$EXP9_DIR > $EXP9_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP9_DIR
 
-# Experiment 10: Recurrent Shared Weights with Layer Dropout
-echo "Running experiment 10: Recurrent Shared Weights with Layer Dropout"
-EXP10_DIR="out-shakespeare-char-recurrent-shared-layer-dropout"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-layer-dropout" --out_dir=$EXP10_DIR --compile=False --batch_size=24
-echo "Sampling from experiment 10"
+# Experiment 10: Recurrent Shared Weights with Sticky Dropout + Loss Scaling
+echo "Running experiment 10: Recurrent Shared Weights with Sticky Dropout + Loss Scaling"
+EXP10_DIR="out-shakespeare-char-recurrent-sticky-dropout-loss-scaling"
+python train.py $BASE_RECURRENT_ARGS --sticky_dropout=0.1 --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sticky-dropout-loss-scaling" --out_dir=$EXP10_DIR
 python sample.py --out_dir=$EXP10_DIR > $EXP10_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP10_DIR
 
-# Experiment 11: Recurrent Shared Weights with Sticky Dropout
-echo "Running experiment 11: Recurrent Shared Weights with Sticky Dropout"
-EXP11_DIR="out-shakespeare-char-recurrent-shared-sticky-dropout"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-sticky-dropout" --out_dir=$EXP11_DIR --compile=False --batch_size=24
-echo "Sampling from experiment 11"
+# Experiment 11: Recurrent Shared Weights with Learned Stopping
+echo "Running experiment 11: Recurrent Shared Weights with Learned Stopping"
+EXP11_DIR="out-shakespeare-char-recurrent-learned-stopping"
+python train.py $BASE_RECURRENT_ARGS --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping" --out_dir=$EXP11_DIR
 python sample.py --out_dir=$EXP11_DIR > $EXP11_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP11_DIR
 
-# Experiment 12: Recurrent Shared Weights with Learned Stopping
-echo "Running experiment 12: Recurrent Shared Weights with Learned Stopping"
-EXP12_DIR="out-shakespeare-char-recurrent-shared-learned-stopping"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-learned-stopping" --out_dir=$EXP12_DIR --compile=False --batch_size=24
-echo "Sampling from experiment 12"
+# Experiment 12: Recurrent Shared Weights with Learned Stopping + Loss Scaling
+echo "Running experiment 12: Recurrent Shared Weights with Learned Stopping + Loss Scaling"
+EXP12_DIR="out-shakespeare-char-recurrent-learned-stopping-loss-scaling"
+python train.py $BASE_RECURRENT_ARGS --learned_stopping=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-loss-scaling" --out_dir=$EXP12_DIR
 python sample.py --out_dir=$EXP12_DIR > $EXP12_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP12_DIR
 
-# Experiment 13: Recurrent Shared MoE with Layer Dropout
-echo "Running experiment 13: Recurrent Shared MoE with Layer Dropout"
-EXP13_DIR="out-shakespeare-char-recurrent-shared-moe-layer-dropout"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-layer-dropout" --out_dir=$EXP13_DIR --compile=False --batch_size=12
-echo "Sampling from experiment 13"
+# Experiment 13: Recurrent Shared Weights with Attentive Stopping
+echo "Running experiment 13: Recurrent Shared Weights with Attentive Stopping"
+EXP13_DIR="out-shakespeare-char-recurrent-attentive-stopping"
+python train.py $BASE_RECURRENT_ARGS --attentive_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-attentive-stopping" --out_dir=$EXP13_DIR
 python sample.py --out_dir=$EXP13_DIR > $EXP13_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP13_DIR
 
-# Experiment 14: Recurrent Shared MoE with Sticky Dropout
-echo "Running experiment 14: Recurrent Shared MoE with Sticky Dropout"
-EXP14_DIR="out-shakespeare-char-recurrent-shared-moe-sticky-dropout"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --sticky_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-sticky-dropout" --out_dir=$EXP14_DIR --compile=False --batch_size=12
-echo "Sampling from experiment 14"
+# Experiment 14: Recurrent Shared Weights with Attentive Stopping + Loss Scaling
+echo "Running experiment 14: Recurrent Shared Weights with Attentive Stopping + Loss Scaling"
+EXP14_DIR="out-shakespeare-char-recurrent-attentive-stopping-loss-scaling"
+python train.py $BASE_RECURRENT_ARGS --attentive_stopping=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-attentive-stopping-loss-scaling" --out_dir=$EXP14_DIR
 python sample.py --out_dir=$EXP14_DIR > $EXP14_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP14_DIR
 
-# Experiment 15: Recurrent Shared MoE with Learned Stopping
-echo "Running experiment 15: Recurrent Shared MoE with Learned Stopping"
-EXP15_DIR="out-shakespeare-char-recurrent-shared-moe-learned-stopping"
-python train.py $CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --moe=True --share_moe_experts=True --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-learned-stopping" --out_dir=$EXP15_DIR --compile=False --batch_size=12
-echo "Sampling from experiment 15"
+
+# --- Combined Recurrent + MoE Experiments ---
+
+# Base for this section: Recurrent Shared Weights + Shared MoE
+BASE_RECURRENT_MOE_ARGS="$BASE_RECURRENT_ARGS --moe=True --share_moe_experts=True --batch_size=12"
+
+# Experiment 15: Recurrent Shared MoE
+echo "Running experiment 15: Recurrent Shared MoE"
+EXP15_DIR="out-shakespeare-char-recurrent-shared-moe"
+python train.py $BASE_RECURRENT_MOE_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe" --out_dir=$EXP15_DIR
 python sample.py --out_dir=$EXP15_DIR > $EXP15_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP15_DIR
+
+# Experiment 16: Recurrent Shared MoE with Loss Scaling
+echo "Running experiment 16: Recurrent Shared MoE with Loss Scaling"
+EXP16_DIR="out-shakespeare-char-recurrent-shared-moe-loss-scaling"
+python train.py $BASE_RECURRENT_MOE_ARGS --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-shared-moe-loss-scaling" --out_dir=$EXP16_DIR
+python sample.py --out_dir=$EXP16_DIR > $EXP16_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP16_DIR
 
 echo "All experiments complete."

@@ -102,6 +102,32 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization without bias."""
+
+    def __init__(self, ndim, eps: float = 1e-8):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(ndim))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        norm = torch.mean(x.pow(2), dim=-1, keepdim=True)
+        x_normalized = x * torch.rsqrt(norm + self.eps)
+        return self.weight * x_normalized
+
+
+def gate_act_fn_clamp(x: torch.Tensor) -> torch.Tensor:
+    return 1 - torch.clamp(x, 0, 1)
+
+
+def apply_score_mod(mask: torch.Tensor | None, gate: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    score_mod = torch.log(gate.clamp(eps, 1)).squeeze(-1)  # b q_idx
+    if mask is None:
+        return score_mod[:, :, None].unsqueeze(1)  # b h q_idx kv_idx
+    mask = mask[None, :, :] + score_mod[:, :, None]  # b q_idx kv_idx
+    mask = mask.unsqueeze(1)  # b h q_idx kv_idx
+    return mask
+
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -125,7 +151,7 @@ class CausalSelfAttention(nn.Module):
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
-    def forward(self, x):
+    def forward(self, x, gate=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -137,11 +163,16 @@ class CausalSelfAttention(nn.Module):
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            attn_mask = None
+            if gate is not None:
+                attn_mask = apply_score_mod(None, gate)
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.dropout if self.training else 0, is_causal=True)
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            if gate is not None:
+                att = att + apply_score_mod(None, gate)
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -169,11 +200,18 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config, mlp_override=None):
+    def __init__(self, config, mlp_override=None, use_rmsnorm=False):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.use_rmsnorm = use_rmsnorm
+        if self.use_rmsnorm:
+            self.norm_attn_in = RMSNorm(config.n_embd)
+            self.norm_attn_out = RMSNorm(config.n_embd)
+            self.norm_mlp_in = RMSNorm(config.n_embd)
+            self.norm_mlp_out = RMSNorm(config.n_embd)
+        else:
+            self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+            self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         if mlp_override:
             self.mlp = mlp_override
         elif config.moe:
@@ -181,8 +219,17 @@ class Block(nn.Module):
         else:
             self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, gate=None):
+        if self.use_rmsnorm:
+            attn_in = self.norm_attn_in(x)
+            x = x + self.norm_attn_out(self.attn(attn_in, gate=gate))
+
+
+            mlp_in = self.norm_mlp_in(x)
+            x = x + self.norm_mlp_out(self.mlp(mlp_in))
+            return x
+
+        x = x + self.attn(self.ln_1(x), gate=gate)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -265,6 +312,30 @@ class GPTConfig:
     layer_dropout: float = 0.0
     sticky_dropout: float = 0.0
     learned_stopping: bool = False
+    learned_stopping_warmup_steps: int = 0
+    learned_stopping_controller_weight: float = 0.0
+    learned_stopping_entropy_weight: float = 0.0
+    learned_stopping_target_depth: Optional[float] = None
+    learned_stopping_temperature: float = 1.0
+    learned_stopping_min_prob: float = 1e-4
+    learned_stopping_use_threshold: bool = False
+    learned_stopping_threshold: float = 0.5
+    # attentive stopping
+    attentive_stopping: bool = False
+    attentive_stopping_warmup_steps: int = 0
+    attentive_stopping_controller_weight: float = 0.0
+    attentive_stopping_entropy_weight: float = 0.0
+    attentive_stopping_target_depth: Optional[float] = None
+    attentive_stopping_temperature: float = 1.0
+    attentive_stopping_min_prob: float = 1e-4
+    attentive_stopping_use_threshold: bool = False
+    attentive_stopping_threshold: float = 0.5
+    fixed_edge_blocks: bool = False
+    use_rmsnorm: bool = False
+    recurrent_noise_mode: str = 'none'  # options: 'none', 'add', 'concat'
+    recurrent_noise_std: float = 0.0
+    recurrent_noise_concat_dim: Optional[int] = None
+    recurrent_extra_layernorm: bool = False
 
 class GPT(nn.Module):
 
@@ -280,21 +351,103 @@ class GPT(nn.Module):
             self.layer_dropout_module = LayerDropout(prob=self.layer_dropout)
         self.sticky_dropout = config.sticky_dropout
         self.learned_stopping = config.learned_stopping
+        self.learned_stopping_warmup_steps = config.learned_stopping_warmup_steps
+        self.learned_stopping_controller_weight = config.learned_stopping_controller_weight
+        self.learned_stopping_entropy_weight = config.learned_stopping_entropy_weight
+        self.learned_stopping_target_depth = config.learned_stopping_target_depth
+        self.learned_stopping_temperature = config.learned_stopping_temperature
+        self.learned_stopping_min_prob = config.learned_stopping_min_prob
+        self.learned_stopping_use_threshold = config.learned_stopping_use_threshold
+        self.learned_stopping_threshold = config.learned_stopping_threshold
         if self.learned_stopping:
-            self.stop_predictor = nn.Linear(config.n_embd, 1)
+            feature_dim = config.n_embd * 2
+            self.stop_predictor = nn.Sequential(
+                nn.LayerNorm(feature_dim),
+                nn.Linear(feature_dim, config.n_embd),
+                nn.GELU(),
+                nn.Linear(config.n_embd, 1),
+            )
+            self.stopping_metrics = {}
+            self._stopping_step = 0
+        else:
+            self.stop_predictor = None
+            self.stopping_metrics = None
+            self._stopping_step = 0
+
+        self.attentive_stopping = config.attentive_stopping
+        self.attentive_stopping_warmup_steps = config.attentive_stopping_warmup_steps
+        self.attentive_stopping_controller_weight = config.attentive_stopping_controller_weight
+        self.attentive_stopping_entropy_weight = config.attentive_stopping_entropy_weight
+        self.attentive_stopping_target_depth = config.attentive_stopping_target_depth
+        self.attentive_stopping_temperature = config.attentive_stopping_temperature
+        self.attentive_stopping_min_prob = config.attentive_stopping_min_prob
+        self.attentive_stopping_use_threshold = config.attentive_stopping_use_threshold
+        self.attentive_stopping_threshold = config.attentive_stopping_threshold
+        if self.attentive_stopping:
+            feature_dim = config.n_embd * 2
+            self.stop_predictor = nn.Sequential(
+                nn.LayerNorm(feature_dim),
+                nn.Linear(feature_dim, config.n_embd),
+                nn.GELU(),
+                nn.Linear(config.n_embd, 1),
+            )
+            self.attentive_stopping_metrics = {}
+            self._attentive_stopping_step = 0
+        else:
+            self.stop_predictor = None
+            self.attentive_stopping_metrics = None
+            self._attentive_stopping_step = 0
+
+        self.fixed_edge_blocks = bool(config.share_parameters_across_layers and config.fixed_edge_blocks)
+        if config.fixed_edge_blocks and not config.share_parameters_across_layers:
+            print("WARNING: fixed_edge_blocks requested without shared parameters; ignoring fixed_edge_blocks.")
+        self.use_rmsnorm = bool(getattr(config, 'use_rmsnorm', False))
+        if self.use_rmsnorm and not self.fixed_edge_blocks:
+            raise ValueError("use_rmsnorm=True requires fixed_edge_blocks=True with shared parameters.")
+        self.recurrent_noise_mode = config.recurrent_noise_mode
+        if self.recurrent_noise_mode not in ('none', 'add', 'concat'):
+            raise ValueError(f"Unsupported recurrent_noise_mode: {self.recurrent_noise_mode}")
+        self.recurrent_noise_std = config.recurrent_noise_std
+        self.recurrent_noise_concat_dim = None
+        if self.recurrent_noise_mode == 'concat':
+            concat_dim = config.recurrent_noise_concat_dim or config.n_embd
+            if concat_dim <= 0:
+                raise ValueError("recurrent_noise_concat_dim must be a positive integer when using 'concat' noise mode.")
+            self.recurrent_noise_concat_dim = concat_dim
+            self.recurrent_noise_proj = nn.Linear(config.n_embd + concat_dim, config.n_embd, bias=config.bias)
+        else:
+            self.recurrent_noise_concat_dim = config.recurrent_noise_concat_dim
+            self.recurrent_noise_proj = None
+        self.recurrent_extra_layernorm = config.recurrent_extra_layernorm
+        if self.recurrent_extra_layernorm:
+            if self.use_rmsnorm:
+                self.recurrent_extra_ln = RMSNorm(config.n_embd)
+            else:
+                self.recurrent_extra_ln = LayerNorm(config.n_embd, bias=config.bias)
+        else:
+            self.recurrent_extra_ln = None
 
         mlp_override = None
         if config.moe and config.share_moe_experts:
             mlp_override = MoE(config)
         num_blocks = 1 if config.share_parameters_across_layers else config.n_layer
-        h = nn.ModuleList([Block(config, mlp_override=mlp_override) for _ in range(num_blocks)])
+        h = nn.ModuleList([
+            Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm)
+            for _ in range(num_blocks)
+        ])
+        if self.fixed_edge_blocks:
+            self.fixed_head = Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm)
+            self.fixed_tail = Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm)
+        else:
+            self.fixed_head = None
+            self.fixed_tail = None
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = h,
-            ln_f = LayerNorm(config.n_embd, bias=config.bias),
+            ln_f = RMSNorm(config.n_embd) if self.use_rmsnorm else LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:
@@ -333,6 +486,28 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def _apply_recurrent_noise(self, x):
+        if self.recurrent_noise_std <= 0 or self.recurrent_noise_mode == 'none':
+            return x
+        if self.recurrent_noise_mode == 'add':
+            noise = torch.randn_like(x) * self.recurrent_noise_std
+            return x + noise
+        if self.recurrent_noise_mode == 'concat':
+            noise_shape = x.shape[:-1] + (self.recurrent_noise_concat_dim,)
+            noise = torch.randn(noise_shape, device=x.device, dtype=x.dtype) * self.recurrent_noise_std
+            x_aug = torch.cat((x, noise), dim=-1)
+            if self.recurrent_noise_proj is None:
+                raise RuntimeError("recurrent_noise_proj must be initialized when using 'concat' noise mode.")
+            return self.recurrent_noise_proj(x_aug)
+        return x
+
+    def _forward_shared_block(self, block, x, gate=None):
+        x_in = self._apply_recurrent_noise(x)
+        out = block(x_in, gate=gate)
+        if self.recurrent_extra_layernorm:
+            out = self.recurrent_extra_ln(out)
+        return out
+
     def forward(self, idx, targets=None, n=None):
         device = idx.device
         b, t = idx.size()
@@ -346,8 +521,13 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
 
+        aux_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+
         if self.config.share_parameters_across_layers:
             blk = self.transformer.h[0]
+            shared_block_fn = lambda tensor, gate=None: self._forward_shared_block(blk, tensor, gate=gate)
+            if self.fixed_edge_blocks and self.fixed_head is not None:
+                x = self.fixed_head(x)
             
             # Determine the number of recurrent steps
             if self.config.recurrent_shared_weights:
@@ -368,9 +548,9 @@ class GPT(nn.Module):
                     x_active = x[active_indices]
                     
                     if self.layer_dropout > 0:
-                        x_active = self.layer_dropout_module(blk, x_active)
+                        x_active = self.layer_dropout_module(shared_block_fn, x_active)
                     else:
-                        x_active = blk(x_active)
+                        x_active = shared_block_fn(x_active)
                     
                     x[active_indices] = x_active
                     num_expanded_layers += active_indices.numel() / B
@@ -380,38 +560,180 @@ class GPT(nn.Module):
                     drops = torch.bernoulli(drop_probs).bool()
                     active_mask.scatter_(0, active_indices[drops], False)
 
-            elif self.learned_stopping and self.training:
+            elif self.learned_stopping:
                 B = x.shape[0]
-                active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
-                num_expanded_layers = 0
+                device = x.device
+                dtype = x.dtype
+                prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+                num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
+                continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
+                stop_masses = []
+
+                if self.training:
+                    self._stopping_step += 1
+
                 for _ in range(num_layers):
-                    active_indices = active_mask.nonzero(as_tuple=True)[0]
-                    if active_indices.numel() == 0:
-                        break
-
-                    x_active = x[active_indices]
-
-                    if self.layer_dropout > 0:
-                        x_active = self.layer_dropout_module(blk, x_active)
+                    x_in = x
+                    if self.layer_dropout > 0 and self.training:
+                        x_transformed = self.layer_dropout_module(shared_block_fn, x_in)
                     else:
-                        x_active = blk(x_active)
-                    
-                    x[active_indices] = x_active
-                    num_expanded_layers += active_indices.numel() / B
+                        x_transformed = shared_block_fn(x_in)
 
-                    # update mask for learned stopping
-                    stop_logits = self.stop_predictor(x_active[:, -1, :]).squeeze(-1)
-                    stop_probs = torch.sigmoid(stop_logits)
-                    stops = torch.bernoulli(stop_probs).bool()
-                    active_mask.scatter_(0, active_indices[stops], False)
+                    pooled = x_in.mean(dim=1)
+                    last_token = x_in[:, -1, :]
+                    stop_features = torch.cat((last_token, pooled), dim=-1)
+                    predictor_dtype = self.stop_predictor[0].weight.dtype if isinstance(self.stop_predictor, nn.Sequential) else stop_features.dtype
+                    stop_features = stop_features.to(predictor_dtype)
+                    stop_logits = self.stop_predictor(stop_features).squeeze(-1)
+                    if self.learned_stopping_temperature != 1.0:
+                        stop_logits = stop_logits / self.learned_stopping_temperature
+                    stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+
+                    if self.training and self._stopping_step <= self.learned_stopping_warmup_steps:
+                        stop_prob = torch.zeros_like(stop_prob)
+                    elif not self.training and self.learned_stopping_use_threshold:
+                        stop_prob = (stop_prob > self.learned_stopping_threshold).to(prob_dtype)
+
+                    if self.training or not self.learned_stopping_use_threshold:
+                        stop_prob = stop_prob.clamp(self.learned_stopping_min_prob, 1.0 - self.learned_stopping_min_prob)
+
+                    stop_mass = continue_probs * stop_prob
+                    stop_masses.append(stop_mass)
+
+                    continue_gate = 1.0 - stop_prob
+                    stop_prob_mix = stop_prob.to(dtype)
+                    continue_gate_mix = continue_gate.to(dtype)
+                    x = stop_prob_mix.view(B, 1, 1) * x_in + continue_gate_mix.view(B, 1, 1) * x_transformed
+
+                    num_expanded_layers_tensor = num_expanded_layers_tensor + (continue_probs * continue_gate)
+                    continue_probs = continue_probs * continue_gate
+
+                residual_mass = continue_probs
+                stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+                stop_distribution = stop_distribution / stop_distribution.sum(dim=1, keepdim=True)
+
+                depth_mean = num_expanded_layers_tensor.mean()
+                target_depth = self.learned_stopping_target_depth
+                if target_depth is None:
+                    if self.config.recurrent_shared_weights:
+                        reference = float(num_layers)
+                    else:
+                        reference = float(self.config.n_layer)
+                    target_depth = 0.5 * (reference + 1.0)
+
+                depth_target_tensor = depth_mean.new_tensor(target_depth)
+                depth_delta = depth_mean - depth_target_tensor
+                controller_loss = depth_delta ** 2
+                controller_active = not (self.training and self._stopping_step <= self.learned_stopping_warmup_steps)
+                controller_loss = controller_loss * self.learned_stopping_controller_weight if (controller_active and self.learned_stopping_controller_weight > 0) else controller_loss * 0.0
+
+                entropy = -(stop_distribution * torch.log(stop_distribution + 1e-8)).sum(dim=1).mean()
+                entropy_term = -self.learned_stopping_entropy_weight * entropy if (controller_active and self.learned_stopping_entropy_weight > 0) else entropy * 0.0
+
+                if self.training and targets is not None:
+                    aux_loss = (controller_loss + entropy_term).to(dtype)
+                    self.stopping_metrics = {
+                        "mean_depth": depth_mean.detach().item(),
+                        "controller_loss": controller_loss.detach().item(),
+                        "entropy": entropy.detach().item(),
+                        "target_depth": float(target_depth),
+                        "depth_delta": depth_delta.detach().item(),
+                        "controller_active": 1.0 if controller_active else 0.0,
+                    }
+                else:
+                    aux_loss = torch.tensor(0.0, device=device, dtype=dtype)
+                    self.stopping_metrics = None
+
+                num_expanded_layers = depth_mean.item()
+
+            elif self.attentive_stopping:
+                B = x.shape[0]
+                device = x.device
+                dtype = x.dtype
+                prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+                num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
+                continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
+                stop_masses = []
+
+                if self.training:
+                    self._attentive_stopping_step += 1
+
+                for _ in range(num_layers):
+                    pooled = x.mean(dim=1)
+                    last_token = x[:, -1, :]
+                    stop_features = torch.cat((last_token, pooled), dim=-1)
+                    predictor_dtype = self.stop_predictor[0].weight.dtype if isinstance(self.stop_predictor, nn.Sequential) else stop_features.dtype
+                    stop_features = stop_features.to(predictor_dtype)
+                    stop_logits = self.stop_predictor(stop_features).squeeze(-1)
+                    if self.attentive_stopping_temperature != 1.0:
+                        stop_logits = stop_logits / self.attentive_stopping_temperature
+                    stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+
+                    if self.training and self._attentive_stopping_step <= self.attentive_stopping_warmup_steps:
+                        stop_prob = torch.zeros_like(stop_prob)
+                    elif not self.training and self.attentive_stopping_use_threshold:
+                        stop_prob = (stop_prob > self.attentive_stopping_threshold).to(prob_dtype)
+                    
+                    if self.training or not self.attentive_stopping_use_threshold:
+                        stop_prob = stop_prob.clamp(self.attentive_stopping_min_prob, 1.0 - self.attentive_stopping_min_prob)
+
+                    stop_mass = continue_probs * stop_prob
+                    stop_masses.append(stop_mass)
+
+                    continue_gate = 1.0 - stop_prob
+                    x = shared_block_fn(x, gate=continue_gate.to(dtype).view(B, 1, 1))
+
+                    num_expanded_layers_tensor = num_expanded_layers_tensor + (continue_probs * continue_gate)
+                    continue_probs = continue_probs * continue_gate
+
+                residual_mass = continue_probs
+                stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+                stop_distribution = stop_distribution / stop_distribution.sum(dim=1, keepdim=True)
+
+                depth_mean = num_expanded_layers_tensor.mean()
+                target_depth = self.attentive_stopping_target_depth
+                if target_depth is None:
+                    if self.config.recurrent_shared_weights:
+                        reference = float(num_layers)
+                    else:
+                        reference = float(self.config.n_layer)
+                    target_depth = 0.5 * (reference + 1.0)
+                
+                depth_target_tensor = depth_mean.new_tensor(target_depth)
+                depth_delta = depth_mean - depth_target_tensor
+                controller_loss = depth_delta ** 2
+                controller_active = not (self.training and self._attentive_stopping_step <= self.attentive_stopping_warmup_steps)
+                controller_loss = controller_loss * self.attentive_stopping_controller_weight if (controller_active and self.attentive_stopping_controller_weight > 0) else controller_loss * 0.0
+
+                entropy = -(stop_distribution * torch.log(stop_distribution + 1e-8)).sum(dim=1).mean()
+                entropy_term = -self.attentive_stopping_entropy_weight * entropy if (controller_active and self.attentive_stopping_entropy_weight > 0) else entropy * 0.0
+
+                if self.training and targets is not None:
+                    aux_loss = (controller_loss + entropy_term).to(dtype)
+                    self.attentive_stopping_metrics = {
+                        "mean_depth": depth_mean.detach().item(),
+                        "controller_loss": controller_loss.detach().item(),
+                        "entropy": entropy.detach().item(),
+                        "target_depth": float(target_depth),
+                        "depth_delta": depth_delta.detach().item(),
+                        "controller_active": 1.0 if controller_active else 0.0,
+                    }
+                else:
+                    aux_loss = torch.tensor(0.0, device=device, dtype=dtype)
+                    self.attentive_stopping_metrics = None
+                
+                num_expanded_layers = depth_mean.item()
+
             else:
                 # original logic + layer_dropout
                 num_expanded_layers = num_layers
                 for _ in range(num_layers):
                     if self.layer_dropout > 0 and self.training:
-                        x = self.layer_dropout_module(blk, x)
+                        x = self.layer_dropout_module(shared_block_fn, x)
                     else:
-                        x = blk(x)
+                        x = shared_block_fn(x)
+            if self.fixed_edge_blocks and self.fixed_tail is not None:
+                x = self.fixed_tail(x)
         else: # Baseline
             for block in self.transformer.h:
                 x = block(x)
@@ -422,6 +744,8 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            if (self.learned_stopping or self.attentive_stopping) and self.training:
+                loss = loss + aux_loss.to(loss.dtype)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
