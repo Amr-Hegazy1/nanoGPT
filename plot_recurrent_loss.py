@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from model import GPTConfig, GPT
+import wandb
 
 # -----------------------------------------------------------------------------
 out_dir = 'out'
@@ -78,3 +79,7 @@ plt.xlabel("Number of expanded layers")
 plt.ylabel("Validation loss")
 plt.title("Validation loss vs. number of expanded layers")
 plt.savefig(os.path.join(out_dir, 'recurrent_loss.png'))
+
+if checkpoint['config']['wandb_log']:
+    wandb.init(project=checkpoint['config']['wandb_project'], name=checkpoint['config']['wandb_run_name'], resume='allow', id=checkpoint['config']['wandb_run_name'])
+    wandb.log({"recurrent_loss_data": losses})

@@ -221,7 +221,9 @@ This experiment allows you to reuse a single shared transformer block `n` times.
 
 *   **Validation Loss Plot:** After training a model with recurrent shared weights, a plot of the validation loss versus the number of expanded layers is generated and saved to the output directory. This can help visualize the effect of the number of layers on the model's performance.
 
-*   **Fixed Edge Blocks:** Use `--fixed_edge_blocks=True` to keep the first and last Transformer blocks unshared while looping a single shared block in the middle of the network.
+*   **Fixed Edge Blocks:** Use `--fixed_edge_blocks=True` to keep a configurable number of Transformer blocks unshared at the beginning and end of the network, while looping a single shared block in the middle. The number of prelude and coda layers can be set with `--n_layers_prelude` and `--n_layers_coda`.
+
+*   **Prelude Injection:** Use `--recurrent_prelude_injection=True` to inject the output of the prelude block into each recurrent block. This is similar to the `add` injection type in the `recurrent-pretraining` repository. This option requires `--fixed_edge_blocks=True` to be set.
 
 *   **Recurrent Noise:** Inject noise before each shared layer with `--recurrent_noise_mode=add|concat`, combining it with `--recurrent_noise_std=<float>` (and `--recurrent_noise_concat_dim=<int>` when concatenating).
 

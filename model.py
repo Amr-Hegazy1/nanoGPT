@@ -143,11 +143,16 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.block_size = config.block_size
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self._disable_flash_with_gate = bool(getattr(config, 'attentive_stopping', False))
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
+            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+                                        .view(1, 1, config.block_size, config.block_size))
+        elif self._disable_flash_with_gate:
+            print("WARNING: attentive stopping disables Flash Attention; using math attention instead.")
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
@@ -161,18 +166,31 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        if self.flash:
+        use_flash = self.flash and not (self._disable_flash_with_gate and gate is not None)
+        if use_flash:
             # efficient attention using Flash Attention CUDA kernels
             attn_mask = None
             if gate is not None:
-                attn_mask = apply_score_mod(None, gate)
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=self.dropout if self.training else 0, is_causal=True)
+                # Build additive bias from gate and expand to (B, H, T, T) with contiguous last dim
+                base_bias = apply_score_mod(None, gate)  # shape (B, 1, 1, 1) or (B, 1, L, S)
+                attn_mask = base_bias.to(q.dtype).expand(B, self.n_head, q.size(-2), k.size(-2)).contiguous()
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=True,
+            )
         else:
+            if not hasattr(self, "bias"):
+                # create causal mask lazily for cases where flash would normally be used
+                mask = torch.tril(torch.ones(self.block_size, self.block_size, device=x.device))
+                self.register_buffer("bias", mask.view(1, 1, self.block_size, self.block_size), persistent=False)
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
             if gate is not None:
-                att = att + apply_score_mod(None, gate)
+                gate_bias = apply_score_mod(None, gate).to(att.dtype)
+                att = att + gate_bias
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
@@ -203,6 +221,7 @@ class Block(nn.Module):
     def __init__(self, config, mlp_override=None, use_rmsnorm=False):
         super().__init__()
         self.use_rmsnorm = use_rmsnorm
+        self.apply_gate_to_residual = bool(getattr(config, 'attentive_stopping', False))
         if self.use_rmsnorm:
             self.norm_attn_in = RMSNorm(config.n_embd)
             self.norm_attn_out = RMSNorm(config.n_embd)
@@ -222,15 +241,26 @@ class Block(nn.Module):
     def forward(self, x, gate=None):
         if self.use_rmsnorm:
             attn_in = self.norm_attn_in(x)
-            x = x + self.norm_attn_out(self.attn(attn_in, gate=gate))
-
+            attn_out = self.norm_attn_out(self.attn(attn_in, gate=gate))
+            if self.apply_gate_to_residual and gate is not None:
+                attn_out = attn_out * gate.to(attn_out.dtype)
+            x = x + attn_out
 
             mlp_in = self.norm_mlp_in(x)
-            x = x + self.norm_mlp_out(self.mlp(mlp_in))
+            mlp_out = self.norm_mlp_out(self.mlp(mlp_in))
+            if self.apply_gate_to_residual and gate is not None:
+                mlp_out = mlp_out * gate.to(mlp_out.dtype)
+            x = x + mlp_out
             return x
 
-        x = x + self.attn(self.ln_1(x), gate=gate)
-        x = x + self.mlp(self.ln_2(x))
+        attn_out = self.attn(self.ln_1(x), gate=gate)
+        if self.apply_gate_to_residual and gate is not None:
+            attn_out = attn_out * gate.to(attn_out.dtype)
+        x = x + attn_out
+        mlp_out = self.mlp(self.ln_2(x))
+        if self.apply_gate_to_residual and gate is not None:
+            mlp_out = mlp_out * gate.to(mlp_out.dtype)
+        x = x + mlp_out
         return x
 
 class MoE(nn.Module):
@@ -331,11 +361,23 @@ class GPTConfig:
     attentive_stopping_use_threshold: bool = False
     attentive_stopping_threshold: float = 0.5
     fixed_edge_blocks: bool = False
+    n_layers_prelude: int = 1
+    n_layers_coda: int = 1
     use_rmsnorm: bool = False
     recurrent_noise_mode: str = 'none'  # options: 'none', 'add', 'concat'
     recurrent_noise_std: float = 0.0
     recurrent_noise_concat_dim: Optional[int] = None
     recurrent_extra_layernorm: bool = False
+    recurrent_prelude_injection: bool = False
+    attentive_stopping: bool = False
+    attentive_stopping_warmup_steps: int = 0
+    attentive_stopping_controller_weight: float = 0.0
+    attentive_stopping_entropy_weight: float = 0.0
+    attentive_stopping_target_depth: float = None
+    attentive_stopping_temperature: float = 1.0
+    attentive_stopping_min_prob: float = 1e-4
+    attentive_stopping_use_threshold: bool = False
+    attentive_stopping_threshold: float = 0.5
 
 class GPT(nn.Module):
 
@@ -391,10 +433,14 @@ class GPT(nn.Module):
                 nn.GELU(),
                 nn.Linear(config.n_embd, 1),
             )
+            final_layer = self.stop_predictor[-1]
+            nn.init.zeros_(final_layer.weight)
+            nn.init.zeros_(final_layer.bias)
             self.attentive_stopping_metrics = {}
             self._attentive_stopping_step = 0
         else:
-            self.stop_predictor = None
+            if not self.learned_stopping:
+                self.stop_predictor = None
             self.attentive_stopping_metrics = None
             self._attentive_stopping_step = 0
 
@@ -402,8 +448,7 @@ class GPT(nn.Module):
         if config.fixed_edge_blocks and not config.share_parameters_across_layers:
             print("WARNING: fixed_edge_blocks requested without shared parameters; ignoring fixed_edge_blocks.")
         self.use_rmsnorm = bool(getattr(config, 'use_rmsnorm', False))
-        if self.use_rmsnorm and not self.fixed_edge_blocks:
-            raise ValueError("use_rmsnorm=True requires fixed_edge_blocks=True with shared parameters.")
+
         self.recurrent_noise_mode = config.recurrent_noise_mode
         if self.recurrent_noise_mode not in ('none', 'add', 'concat'):
             raise ValueError(f"Unsupported recurrent_noise_mode: {self.recurrent_noise_mode}")
@@ -419,6 +464,16 @@ class GPT(nn.Module):
             self.recurrent_noise_concat_dim = config.recurrent_noise_concat_dim
             self.recurrent_noise_proj = None
         self.recurrent_extra_layernorm = config.recurrent_extra_layernorm
+        self.recurrent_prelude_injection = config.recurrent_prelude_injection
+        self.attentive_stopping = config.attentive_stopping
+        self.attentive_stopping_warmup_steps = config.attentive_stopping_warmup_steps
+        self.attentive_stopping_controller_weight = config.attentive_stopping_controller_weight
+        self.attentive_stopping_entropy_weight = config.attentive_stopping_entropy_weight
+        self.attentive_stopping_target_depth = config.attentive_stopping_target_depth
+        self.attentive_stopping_temperature = config.attentive_stopping_temperature
+        self.attentive_stopping_min_prob = config.attentive_stopping_min_prob
+        self.attentive_stopping_use_threshold = config.attentive_stopping_use_threshold
+        self.attentive_stopping_threshold = config.attentive_stopping_threshold
         if self.recurrent_extra_layernorm:
             if self.use_rmsnorm:
                 self.recurrent_extra_ln = RMSNorm(config.n_embd)
@@ -436,8 +491,8 @@ class GPT(nn.Module):
             for _ in range(num_blocks)
         ])
         if self.fixed_edge_blocks:
-            self.fixed_head = Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm)
-            self.fixed_tail = Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm)
+            self.fixed_head = nn.ModuleList([Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm) for _ in range(config.n_layers_prelude)])
+            self.fixed_tail = nn.ModuleList([Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm) for _ in range(config.n_layers_coda)])
         else:
             self.fixed_head = None
             self.fixed_tail = None
@@ -501,8 +556,10 @@ class GPT(nn.Module):
             return self.recurrent_noise_proj(x_aug)
         return x
 
-    def _forward_shared_block(self, block, x, gate=None):
+    def _forward_shared_block(self, block, x, gate=None, prelude_output=None):
         x_in = self._apply_recurrent_noise(x)
+        if prelude_output is not None:
+            x_in = x_in + prelude_output
         out = block(x_in, gate=gate)
         if self.recurrent_extra_layernorm:
             out = self.recurrent_extra_ln(out)
@@ -524,10 +581,17 @@ class GPT(nn.Module):
         aux_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
 
         if self.config.share_parameters_across_layers:
+            prelude_output = None
             blk = self.transformer.h[0]
-            shared_block_fn = lambda tensor, gate=None: self._forward_shared_block(blk, tensor, gate=gate)
+            if self.recurrent_prelude_injection:
+                shared_block_fn = lambda tensor, gate=None: self._forward_shared_block(blk, tensor, gate=gate, prelude_output=prelude_output)
+            else:
+                shared_block_fn = lambda tensor, gate=None: self._forward_shared_block(blk, tensor, gate=gate)
             if self.fixed_edge_blocks and self.fixed_head is not None:
-                x = self.fixed_head(x)
+                for block in self.fixed_head:
+                    x = block(x)
+                if self.recurrent_prelude_injection:
+                    prelude_output = x.clone()
             
             # Determine the number of recurrent steps
             if self.config.recurrent_shared_weights:
@@ -733,7 +797,8 @@ class GPT(nn.Module):
                     else:
                         x = shared_block_fn(x)
             if self.fixed_edge_blocks and self.fixed_tail is not None:
-                x = self.fixed_tail(x)
+                for block in self.fixed_tail:
+                    x = block(x)
         else: # Baseline
             for block in self.transformer.h:
                 x = block(x)
