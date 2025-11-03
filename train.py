@@ -30,7 +30,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from model import GPTConfig, GPT
 
 # ---- Recurrent Shared Weights Sampling ----
-def sample_recurrent_depth(max_depth, scale_loss_by_n_layer=False, min_depth=1):
+def sample_recurrent_depth(max_depth, scale_loss_by_n_layer=False, min_depth=1, peak=32):
     """Sample the number of recurrent steps to expand."""
     if max_depth < min_depth:
         raise ValueError(f"max_depth ({max_depth}) must be >= min_depth ({min_depth})")
@@ -38,8 +38,8 @@ def sample_recurrent_depth(max_depth, scale_loss_by_n_layer=False, min_depth=1):
         return np.random.randint(min_depth, max_depth + 1)
     # Samples from a log-normal distribution with params to match prior behaviour:
     # mean=32, median=29, mode=24. min=1, max=max_depth (default 32, legacy capped at 100)
-    mu = 3.367
     sigma = 0.435
+    mu = np.log(peak) + sigma**2
     sample = np.random.lognormal(mu, sigma)
     return int(np.clip(round(sample), min_depth, max_depth))
 
@@ -91,8 +91,22 @@ learned_stopping_temperature = 1.0
 learned_stopping_min_prob = 1e-4
 learned_stopping_use_threshold = False
 learned_stopping_threshold = 0.5
+attentive_stopping = False
+attentive_stopping_warmup_steps = 0
+attentive_stopping_controller_weight = 0.0
+attentive_stopping_entropy_weight = 0.0
+attentive_stopping_target_depth = None
+attentive_stopping_temperature = 1.0
+attentive_stopping_min_prob = 1e-4
+attentive_stopping_use_threshold = False
+attentive_stopping_threshold = 0.5
 fixed_edge_blocks = False
+n_layers_prelude = 1
+n_layers_coda = 1
 use_rmsnorm = False
+log_correlation = False
+recurrent_depth_peak = 32
+recurrent_prelude_injection = False
 recurrent_noise_mode = 'none'
 recurrent_noise_std = 0.0
 recurrent_noise_concat_dim = None
@@ -116,8 +130,8 @@ device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps'
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-for optional_key in ['learned_stopping_target_depth']:
+config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str)) and k != 'log_dist_peak']
+for optional_key in ['learned_stopping_target_depth', 'attentive_stopping_target_depth', 'recurrent_noise_concat_dim', 'n_layers_prelude', 'n_layers_coda', 'log_correlation', 'recurrent_depth_peak', 'recurrent_prelude_injection']:
     if optional_key not in config_keys and optional_key in globals():
         config_keys.append(optional_key)
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -214,7 +228,17 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   recurrent_noise_mode=recurrent_noise_mode,
                   recurrent_noise_std=recurrent_noise_std,
                   recurrent_noise_concat_dim=recurrent_noise_concat_dim,
-                  recurrent_extra_layernorm=recurrent_extra_layernorm)
+                  recurrent_extra_layernorm=recurrent_extra_layernorm,
+                  recurrent_prelude_injection=recurrent_prelude_injection,
+                  attentive_stopping=attentive_stopping,
+                  attentive_stopping_warmup_steps=attentive_stopping_warmup_steps,
+                  attentive_stopping_controller_weight=attentive_stopping_controller_weight,
+                  attentive_stopping_entropy_weight=attentive_stopping_entropy_weight,
+                  attentive_stopping_target_depth=attentive_stopping_target_depth,
+                  attentive_stopping_temperature=attentive_stopping_temperature,
+                  attentive_stopping_min_prob=attentive_stopping_min_prob,
+                  attentive_stopping_use_threshold=attentive_stopping_use_threshold,
+                  attentive_stopping_threshold=attentive_stopping_threshold)
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -374,7 +398,7 @@ def estimate_loss():
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
-    return out
+    return out, logits
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -403,6 +427,7 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+sampled_depths = []
 while True:
 
     # determine and set the learning rate for this iteration
@@ -412,17 +437,48 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses = estimate_loss()
+        losses, val_logits = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
-            wandb.log({
+            log_dict = {
                 "iter": iter_num,
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                 "val/perplexity": torch.exp(losses['val']),
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
-            })
+            }
+            if len(sampled_depths) > 0:
+                log_dict["train/sampled_depth_distribution"] = wandb.Histogram(sampled_depths)
+                sampled_depths = []
+            # Add stopping metrics if they exist
+            stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
+            if stopping_metrics:
+                log_dict.update({f"train/stopping/{k}": v for k, v in stopping_metrics.items()})
+            
+            attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
+            if attentive_stopping_metrics:
+                log_dict.update({f"train/attentive_stopping/{k}": v for k, v in attentive_stopping_metrics.items()})
+
+            if log_correlation:
+                # calculate token embedding correlation
+                x_c = val_logits - val_logits.mean(dim=-1, keepdim=True)
+                normed_x = x_c / x_c.norm(dim=-1, keepdim=True)
+                token_corr = (normed_x @ normed_x.transpose(-2, -1)).mean()
+                log_dict['val/token_correlation'] = token_corr.item()
+
+                # calculate batch correlation
+                # Reshape the logits tensor to 2D
+                logits_2d = val_logits.view(-1, val_logits.size(-1))
+                # Calculate the correlation matrix
+                corr_matrix = torch.corrcoef(logits_2d)
+                # Extract the upper triangular part of the matrix, excluding the diagonal
+                upper_tri = torch.triu(corr_matrix, diagonal=1)
+                # Calculate the mean of the correlations
+                mean_corr = upper_tri.sum() / (upper_tri.numel() - val_logits.size(0))
+                log_dict['val/batch_correlation'] = mean_corr.item()
+
+            wandb.log(log_dict)
         if tensorboard_log and master_process:
             writer.add_scalar('train/loss', losses['train'], iter_num)
             writer.add_scalar('val/loss', losses['val'], iter_num)
@@ -454,7 +510,9 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            n = sample_recurrent_depth(recurrent_depth, scale_loss_by_n_layer) if recurrent_shared_weights else None
+            n = sample_recurrent_depth(recurrent_depth, scale_loss_by_n_layer, peak=recurrent_depth_peak) if recurrent_shared_weights else None
+            if n is not None:
+                sampled_depths.append(n)
             logits, loss, num_expanded_layers = model(X, Y, n=n)
             if scale_loss_by_n_layer and num_expanded_layers is not None:
                 if n is not None and n > 0:
@@ -495,23 +553,9 @@ while True:
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-        if wandb_log:
-            log_dict = {
-                "iter": iter_num,
-                "train/loss": lossf,
-                "lr": lr,
-                "mfu": running_mfu*100, # convert to percentage
-            }
-            # Add stopping metrics if they exist
-            stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
-            if stopping_metrics:
-                log_dict.update({f"train/stopping/{k}": v for k, v in stopping_metrics.items()})
-            
-            attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
-            if attentive_stopping_metrics:
-                log_dict.update({f"train/attentive_stopping/{k}": v for k, v in attentive_stopping_metrics.items()})
 
-            wandb.log(log_dict)
+
+
 
         if tensorboard_log:
             writer.add_scalar('train/loss', lossf, iter_num)
