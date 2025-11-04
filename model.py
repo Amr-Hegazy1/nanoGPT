@@ -221,6 +221,7 @@ class Block(nn.Module):
     def __init__(self, config, mlp_override=None, use_rmsnorm=False):
         super().__init__()
         self.use_rmsnorm = use_rmsnorm
+        self.sandwich_norm = getattr(config, 'sandwich_norm', False)
         self.apply_gate_to_residual = bool(getattr(config, 'attentive_stopping', False))
         if self.use_rmsnorm:
             self.norm_attn_in = RMSNorm(config.n_embd)
@@ -230,6 +231,15 @@ class Block(nn.Module):
         else:
             self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
             self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+
+        if self.sandwich_norm:
+            if self.use_rmsnorm:
+                self.ln_1_post = RMSNorm(config.n_embd)
+                self.ln_2_post = RMSNorm(config.n_embd)
+            else:
+                self.ln_1_post = LayerNorm(config.n_embd, bias=config.bias)
+                self.ln_2_post = LayerNorm(config.n_embd, bias=config.bias)
+
         self.attn = CausalSelfAttention(config)
         if mlp_override:
             self.mlp = mlp_override
@@ -245,22 +255,31 @@ class Block(nn.Module):
             if self.apply_gate_to_residual and gate is not None:
                 attn_out = attn_out * gate.to(attn_out.dtype)
             x = x + attn_out
+            if self.sandwich_norm:
+                x = self.ln_1_post(x)
 
             mlp_in = self.norm_mlp_in(x)
             mlp_out = self.norm_mlp_out(self.mlp(mlp_in))
             if self.apply_gate_to_residual and gate is not None:
                 mlp_out = mlp_out * gate.to(mlp_out.dtype)
             x = x + mlp_out
+            if self.sandwich_norm:
+                x = self.ln_2_post(x)
             return x
 
         attn_out = self.attn(self.ln_1(x), gate=gate)
         if self.apply_gate_to_residual and gate is not None:
             attn_out = attn_out * gate.to(attn_out.dtype)
         x = x + attn_out
+        if self.sandwich_norm:
+            x = self.ln_1_post(x)
+
         mlp_out = self.mlp(self.ln_2(x))
         if self.apply_gate_to_residual and gate is not None:
             mlp_out = mlp_out * gate.to(mlp_out.dtype)
         x = x + mlp_out
+        if self.sandwich_norm:
+            x = self.ln_2_post(x)
         return x
 
 class MoE(nn.Module):

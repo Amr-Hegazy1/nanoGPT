@@ -257,6 +257,16 @@ This experiment implements a Mixture of Experts (MoE) model. At each layer, a ro
     *   You can set the number of top experts to use with `--moe_top_k=<value>` (default is 2).
     *   To use hard routing, add the `--moe_hard_routing=True` flag.
 
+### Sandwich Norm (Experimental)
+
+This experiment adds an extra normalization layer after the main operation in each sub-block of the transformer. This can help stabilize training and improve performance in some cases.
+
+*   **How to use:**
+    *   To enable Sandwich Norm during training, use the following flag:
+        ```bash
+        python train.py --sandwich_norm=True
+        ```
+
 ### Shared MoE (Experimental)
 
 This experiment allows you to share the same set of experts across all layers of the model. This can significantly reduce the number of parameters and memory usage, especially for models with a large number of experts.
