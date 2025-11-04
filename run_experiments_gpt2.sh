@@ -213,7 +213,7 @@ python plot_recurrent_loss.py --out_dir=$EXP22_DIR
 # Experiment 23: Recurrent Shared Weights with RMS Norm + Learned Stopping
 echo "Running experiment 23: Recurrent Shared Weights with RMS Norm + Learned Stopping"
 EXP23_DIR="out-gpt2-recurrent-rms-norm-learned-stopping"
-$TRAIN_CMD $BASE_RECURRENT_RMS_ARGS --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-rms-norm-learned-stopping" --out_dir=$EXP23_DIR
+$TRAIN_CMD $BASE_RECURRENT_RMS_ARGS --learned_stopping=True --wandb_log=.True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-rms-norm-learned-stopping" --out_dir=$EXP23_DIR
 python sample.py --out_dir=$EXP23_DIR > $EXP23_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP23_DIR
 
@@ -230,5 +230,14 @@ EXP25_DIR="out-gpt2-attentive-stopping-fixed-edge-noise"
 $TRAIN_CMD $BASE_RECURRENT_ARGS --attentive_stopping=True --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="attentive-stopping-fixed-edge-noise" --out_dir=$EXP25_DIR
 python sample.py --out_dir=$EXP25_DIR > $EXP25_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP25_DIR
+
+# Experiment 26: Sandwich Norm with LayerNorm
+echo "Running experiment 26: Sandwich Norm with LayerNorm"
+EXP26_DIR="out-gpt2-sandwich-norm-layernorm"
+$TRAIN_CMD $CONFIG --sandwich_norm=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="sandwich-norm-layernorm" --out_dir=$EXP26_DIR --compile=False --batch_size=4 --log_correlation=True
+echo "Sampling from experiment 26"
+python sample.py --out_dir=$EXP26_DIR > $EXP26_DIR/samples.txt
+
+echo "All experiments complete."
 
 echo "All experiments complete."
