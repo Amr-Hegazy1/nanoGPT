@@ -99,6 +99,7 @@ attentive_stopping_temperature = 1.0
 attentive_stopping_min_prob = 1e-4
 attentive_stopping_use_threshold = False
 attentive_stopping_threshold = 0.5
+stopping_tokenwise = False
 fixed_edge_blocks = False
 n_layers_prelude = 1
 n_layers_coda = 1
@@ -239,7 +240,8 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   attentive_stopping_temperature=attentive_stopping_temperature,
                   attentive_stopping_min_prob=attentive_stopping_min_prob,
                   attentive_stopping_use_threshold=attentive_stopping_use_threshold,
-                  attentive_stopping_threshold=attentive_stopping_threshold)
+                  attentive_stopping_threshold=attentive_stopping_threshold,
+                  stopping_tokenwise=stopping_tokenwise)
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -279,6 +281,10 @@ elif init_from == 'resume':
         model_args['scale_loss_by_n_layer'] = checkpoint_model_args['scale_loss_by_n_layer']
     if 'sticky_dropout' in checkpoint_model_args:
         model_args['sticky_dropout'] = checkpoint_model_args['sticky_dropout']
+    if 'stopping_tokenwise' in checkpoint_model_args:
+        model_args['stopping_tokenwise'] = checkpoint_model_args['stopping_tokenwise']
+    if 'stopping_tokenwise' in checkpoint_model_args:
+        model_args['stopping_tokenwise'] = checkpoint_model_args['stopping_tokenwise']
     if 'learned_stopping' in checkpoint_model_args:
         model_args['learned_stopping'] = checkpoint_model_args['learned_stopping']
     if 'learned_stopping_warmup_steps' in checkpoint_model_args:
@@ -342,6 +348,8 @@ elif init_from.startswith('gpt2'):
     model_args['share_moe_experts'] = getattr(model.config, 'share_moe_experts', False)
     model_args['scale_loss_by_n_layer'] = getattr(model.config, 'scale_loss_by_n_layer', False)
     model_args['sticky_dropout'] = getattr(model.config, 'sticky_dropout', 0.0)
+    model_args['stopping_tokenwise'] = getattr(model.config, 'stopping_tokenwise', False)
+    model_args['stopping_tokenwise'] = getattr(model.config, 'stopping_tokenwise', False)
     model_args['learned_stopping'] = getattr(model.config, 'learned_stopping', False)
     model_args['learned_stopping_warmup_steps'] = getattr(model.config, 'learned_stopping_warmup_steps', 0)
     model_args['learned_stopping_controller_weight'] = getattr(model.config, 'learned_stopping_controller_weight', 0.0)
@@ -765,7 +773,8 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   attentive_stopping_temperature=attentive_stopping_temperature,
                   attentive_stopping_min_prob=attentive_stopping_min_prob,
                   attentive_stopping_use_threshold=attentive_stopping_use_threshold,
-                  attentive_stopping_threshold=attentive_stopping_threshold)
+                  attentive_stopping_threshold=attentive_stopping_threshold,
+                  stopping_tokenwise=stopping_tokenwise)
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")

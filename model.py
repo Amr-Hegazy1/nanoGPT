@@ -311,6 +311,7 @@ class GPTConfig:
     attentive_stopping_min_prob: float = 1e-4
     attentive_stopping_use_threshold: bool = False
     attentive_stopping_threshold: float = 0.5
+    stopping_tokenwise: bool = False
     fixed_edge_blocks: bool = False
     n_layers_prelude: int = 1
     n_layers_coda: int = 1
@@ -340,6 +341,7 @@ class GPT(nn.Module):
 
         # new attributes for experiments
         self.sticky_dropout = config.sticky_dropout
+        self.stopping_tokenwise = bool(getattr(config, 'stopping_tokenwise', False))
         self.learned_stopping = config.learned_stopping
         self.learned_stopping_warmup_steps = config.learned_stopping_warmup_steps
         self.learned_stopping_controller_weight = config.learned_stopping_controller_weight
