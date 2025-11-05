@@ -304,6 +304,7 @@ This experiment introduces a differentiable gating head that blends the shared b
         *   `--learned_stopping_temperature` and `--learned_stopping_min_prob` to tune the smoothness of the gate.
         *   `--learned_stopping_use_threshold=True --learned_stopping_threshold=0.6` to snap the gate to a hard decision at evaluation time.
 *   **Logging:** When enabled, the training loop logs `mean_depth`, controller loss, entropy, and the instantaneous target depth so you can track convergence of the learned policy.
+*   **Per-token mode:** Add `--stopping_tokenwise=True` to make the gate operate on each token rather than on whole sequences.
 
 
 ## efficiency notes

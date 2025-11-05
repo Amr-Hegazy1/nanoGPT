@@ -92,12 +92,26 @@ $TRAIN_CMD $BASE_RECURRENT_ARGS --sticky_dropout=0.1 --wandb_log=True --wandb_pr
 python sample.py --out_dir=$EXP9_DIR > $EXP9_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP9_DIR
 
+# Experiment 9 (Tokenwise): Recurrent Shared Weights with Sticky Dropout
+echo "Running experiment 9 (Tokenwise): Recurrent Shared Weights with Sticky Dropout"
+EXP9_TOKENWISE_DIR="out-gpt2-recurrent-sticky-dropout-tokenwise"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --sticky_dropout=0.1 --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sticky-dropout-tokenwise" --out_dir=$EXP9_TOKENWISE_DIR
+python sample.py --out_dir=$EXP9_TOKENWISE_DIR > $EXP9_TOKENWISE_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP9_TOKENWISE_DIR
+
 # Experiment 10: Recurrent Shared Weights with Sticky Dropout + Loss Scaling
 echo "Running experiment 10: Recurrent Shared Weights with Sticky Dropout + Loss Scaling"
 EXP10_DIR="out-gpt2-recurrent-sticky-dropout-loss-scaling"
 $TRAIN_CMD $BASE_RECURRENT_ARGS --sticky_dropout=0.1 --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sticky-dropout-loss-scaling" --out_dir=$EXP10_DIR
 python sample.py --out_dir=$EXP10_DIR > $EXP10_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP10_DIR
+
+# Experiment 10 (Tokenwise): Recurrent Shared Weights with Sticky Dropout + Loss Scaling
+echo "Running experiment 10 (Tokenwise): Recurrent Shared Weights with Sticky Dropout + Loss Scaling"
+EXP10_TOKENWISE_DIR="out-gpt2-recurrent-sticky-dropout-loss-scaling-tokenwise"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --sticky_dropout=0.1 --scale_loss_by_n_layer=True --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sticky-dropout-loss-scaling-tokenwise" --out_dir=$EXP10_TOKENWISE_DIR
+python sample.py --out_dir=$EXP10_TOKENWISE_DIR > $EXP10_TOKENWISE_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP10_TOKENWISE_DIR
 
 # Experiment 11: Recurrent Shared Weights with Learned Stopping
 echo "Running experiment 11: Recurrent Shared Weights with Learned Stopping"
@@ -106,12 +120,26 @@ $TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --wandb_log=True --wandb
 python sample.py --out_dir=$EXP11_DIR > $EXP11_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP11_DIR
 
+# Experiment 11 (Tokenwise): Recurrent Shared Weights with Learned Stopping
+echo "Running experiment 11 (Tokenwise): Recurrent Shared Weights with Learned Stopping"
+EXP11_TOKENWISE_DIR="out-gpt2-recurrent-learned-stopping-tokenwise"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-tokenwise" --out_dir=$EXP11_TOKENWISE_DIR
+python sample.py --out_dir=$EXP11_TOKENWISE_DIR > $EXP11_TOKENWISE_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP11_TOKENWISE_DIR
+
 # Experiment 12: Recurrent Shared Weights with Learned Stopping + Loss Scaling
 echo "Running experiment 12: Recurrent Shared Weights with Learned Stopping + Loss Scaling"
 EXP12_DIR="out-gpt2-recurrent-learned-stopping-loss-scaling"
 $TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-loss-scaling" --out_dir=$EXP12_DIR
 python sample.py --out_dir=$EXP12_DIR > $EXP12_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP12_DIR
+
+# Experiment 12 (Tokenwise): Recurrent Shared Weights with Learned Stopping + Loss Scaling
+echo "Running experiment 12 (Tokenwise): Recurrent Shared Weights with Learned Stopping + Loss Scaling"
+EXP12_TOKENWISE_DIR="out-gpt2-recurrent-learned-stopping-loss-scaling-tokenwise"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --scale_loss_by_n_layer=True --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-loss-scaling-tokenwise" --out_dir=$EXP12_TOKENWISE_DIR
+python sample.py --out_dir=$EXP12_TOKENWISE_DIR > $EXP12_TOKENWISE_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP12_TOKENWISE_DIR
 
 # Experiment 13: Recurrent Shared Weights with Attentive Stopping
 echo "Running experiment 13: Recurrent Shared Weights with Attentive Stopping"
@@ -120,12 +148,26 @@ $TRAIN_CMD $BASE_RECURRENT_ARGS --attentive_stopping=True --wandb_log=True --wan
 python sample.py --out_dir=$EXP13_DIR > $EXP13_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP13_DIR
 
+# Experiment 13 (Tokenwise): Recurrent Shared Weights with Attentive Stopping
+echo "Running experiment 13 (Tokenwise): Recurrent Shared Weights with Attentive Stopping"
+EXP13_TOKENWISE_DIR="out-gpt2-recurrent-attentive-stopping-tokenwise"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --attentive_stopping=True --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-attentive-stopping-tokenwise" --out_dir=$EXP13_TOKENWISE_DIR
+python sample.py --out_dir=$EXP13_TOKENWISE_DIR > $EXP13_TOKENWISE_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP13_TOKENWISE_DIR
+
 # Experiment 14: Recurrent Shared Weights with Attentive Stopping + Loss Scaling
 echo "Running experiment 14: Recurrent Shared Weights with Attentive Stopping + Loss Scaling"
 EXP14_DIR="out-gpt2-recurrent-attentive-stopping-loss-scaling"
 $TRAIN_CMD $BASE_RECURRENT_ARGS --attentive_stopping=True --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-attentive-stopping-loss-scaling" --out_dir=$EXP14_DIR
 python sample.py --out_dir=$EXP14_DIR > $EXP14_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP14_DIR
+
+# Experiment 14 (Tokenwise): Recurrent Shared Weights with Attentive Stopping + Loss Scaling
+echo "Running experiment 14 (Tokenwise): Recurrent Shared Weights with Attentive Stopping + Loss Scaling"
+EXP14_TOKENWISE_DIR="out-gpt2-recurrent-attentive-stopping-loss-scaling-tokenwise"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --attentive_stopping=True --scale_loss_by_n_layer=True --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-attentive-stopping-loss-scaling-tokenwise" --out_dir=$EXP14_TOKENWISE_DIR
+python sample.py --out_dir=$EXP14_TOKENWISE_DIR > $EXP14_TOKENWISE_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP14_TOKENWISE_DIR
 
 
 # --- Combined Recurrent + MoE Experiments ---
