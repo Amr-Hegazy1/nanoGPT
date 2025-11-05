@@ -80,7 +80,6 @@ moe_top_k = 2
 moe_hard_routing = False
 share_moe_experts = False
 scale_loss_by_n_layer = False
-layer_dropout = 0.0
 sticky_dropout = 0.0
 learned_stopping = False
 learned_stopping_warmup_steps = 0
@@ -215,7 +214,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   recurrent_depth=recurrent_depth,
                   moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing, share_moe_experts=share_moe_experts,
                   scale_loss_by_n_layer=scale_loss_by_n_layer,
-                  layer_dropout=layer_dropout, sticky_dropout=sticky_dropout, learned_stopping=learned_stopping,
+                  sticky_dropout=sticky_dropout, learned_stopping=learned_stopping,
                   learned_stopping_warmup_steps=learned_stopping_warmup_steps,
                   learned_stopping_controller_weight=learned_stopping_controller_weight,
                   learned_stopping_entropy_weight=learned_stopping_entropy_weight,
@@ -278,8 +277,6 @@ elif init_from == 'resume':
         model_args['share_moe_experts'] = checkpoint_model_args['share_moe_experts']
     if 'scale_loss_by_n_layer' in checkpoint_model_args:
         model_args['scale_loss_by_n_layer'] = checkpoint_model_args['scale_loss_by_n_layer']
-    if 'layer_dropout' in checkpoint_model_args:
-        model_args['layer_dropout'] = checkpoint_model_args['layer_dropout']
     if 'sticky_dropout' in checkpoint_model_args:
         model_args['sticky_dropout'] = checkpoint_model_args['sticky_dropout']
     if 'learned_stopping' in checkpoint_model_args:
@@ -344,7 +341,6 @@ elif init_from.startswith('gpt2'):
     model_args['moe_hard_routing'] = getattr(model.config, 'moe_hard_routing', False)
     model_args['share_moe_experts'] = getattr(model.config, 'share_moe_experts', False)
     model_args['scale_loss_by_n_layer'] = getattr(model.config, 'scale_loss_by_n_layer', False)
-    model_args['layer_dropout'] = getattr(model.config, 'layer_dropout', 0.0)
     model_args['sticky_dropout'] = getattr(model.config, 'sticky_dropout', 0.0)
     model_args['learned_stopping'] = getattr(model.config, 'learned_stopping', False)
     model_args['learned_stopping_warmup_steps'] = getattr(model.config, 'learned_stopping_warmup_steps', 0)
@@ -612,7 +608,6 @@ moe_top_k = 2
 moe_hard_routing = False
 share_moe_experts = False
 scale_loss_by_n_layer = False
-layer_dropout = 0.0
 sticky_dropout = 0.0
 learned_stopping = False
 learned_stopping_warmup_steps = 0
@@ -746,7 +741,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   recurrent_depth=recurrent_depth,
                   moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing, share_moe_experts=share_moe_experts,
                   scale_loss_by_n_layer=scale_loss_by_n_layer,
-                  layer_dropout=layer_dropout, sticky_dropout=sticky_dropout, learned_stopping=learned_stopping,
+                  sticky_dropout=sticky_dropout, learned_stopping=learned_stopping,
                   learned_stopping_warmup_steps=learned_stopping_warmup_steps,
                   learned_stopping_controller_weight=learned_stopping_controller_weight,
                   learned_stopping_entropy_weight=learned_stopping_entropy_weight,
@@ -808,8 +803,6 @@ elif init_from == 'resume':
         model_args['share_moe_experts'] = checkpoint_model_args['share_moe_experts']
     if 'scale_loss_by_n_layer' in checkpoint_model_args:
         model_args['scale_loss_by_n_layer'] = checkpoint_model_args['scale_loss_by_n_layer']
-    if 'layer_dropout' in checkpoint_model_args:
-        model_args['layer_dropout'] = checkpoint_model_args['layer_dropout']
     if 'sticky_dropout' in checkpoint_model_args:
         model_args['sticky_dropout'] = checkpoint_model_args['sticky_dropout']
     if 'learned_stopping' in checkpoint_model_args:
@@ -872,7 +865,6 @@ elif init_from.startswith('gpt2'):
     model_args['moe_hard_routing'] = getattr(model.config, 'moe_hard_routing', False)
     model_args['share_moe_experts'] = getattr(model.config, 'share_moe_experts', False)
     model_args['scale_loss_by_n_layer'] = getattr(model.config, 'scale_loss_by_n_layer', False)
-    model_args['layer_dropout'] = getattr(model.config, 'layer_dropout', 0.0)
     model_args['sticky_dropout'] = getattr(model.config, 'sticky_dropout', 0.0)
     model_args['learned_stopping'] = getattr(model.config, 'learned_stopping', False)
     model_args['learned_stopping_warmup_steps'] = getattr(model.config, 'learned_stopping_warmup_steps', 0)

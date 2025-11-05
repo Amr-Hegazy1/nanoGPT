@@ -10,87 +10,20 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
-from typing import Optional, Union, Callable
+from typing import Optional
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-class LayerDropout(torch.nn.Module):
-    """
-    A module that applies layer dropout to the input tensor of an underlying module.
-    It drops a portion of an input tensor, applies the underlying module on the
-    remaining parts of the tensor, and then concatenates with the dropped portion of the tensor.
-    When applied during training, it can have a regularization effect, and can potentially speedup training.
-
-    Args:
-        prob (float): The probability of dropping an input. Defaults to 0.0.
-        dim (Optional[int]): The dimension of input tensor along which to drop layers. Defaults to 0 (i.e., batch size).
-        disable_on_eval (Optional[bool]): Whether to disable layer dropout during evaluation. Defaults to True.
-        seed (Optional[int]): The seed for the random number generator. Defaults to None.
-    """
-
-    def __init__(
-        self,
-        prob: float = 0.0,
-        dim: Optional[int] = 0,
-        disable_on_eval: Optional[bool] = True,
-        seed: Optional[int] = None,
-    ):
-        super().__init__()
-        self.prob: float = prob
-        self.dim = dim
-        self.disable_on_eval: bool = disable_on_eval
-        self.generator = torch.Generator(device="cpu")
-        self.inferred: float = None
-
-        if seed is not None:
-            self.generator.manual_seed(seed)
-
-    def forward(
-        self,
-        function: Union[Callable, torch.nn.Module],
-        input: torch.Tensor,
-        *args,
-        **kwargs,
-    ) -> torch.Tensor:
-        """
-        Apply layer dropout to the input tensor.
-
-        Args:
-            function (Union[Callable, torch.nn.Module]): The function or module to apply to the input tensor.
-            input (torch.Tensor): The input tensor.
-            *args: Additional positional arguments passed to the function.
-            **kwargs: Additional keyword arguments passed to the function.
-        Returns:
-            torch.Tensor: The output tensor after applying layer dropout.
-        """
-        n = input.shape[self.dim]
-
-        if self.prob == 0 or (self.disable_on_eval and self.training is False):
-            self.inferred = 1.0
-            return function(input, *args, **kwargs)
-
-        skip = (
-            torch.bernoulli(torch.Tensor((n) * [self.prob]), generator=self.generator)
-            .to(input.device)
-            .to(input.dtype)
-        )
-        self.inferred = 1 - torch.mean(skip)
-        ind_selected = (skip == 0).nonzero().squeeze()
-
-        if ind_selected.numel() > 0:
-            x_selected = torch.index_select(input, self.dim, ind_selected)
-            out_selected = function(x_selected, *args, **kwargs)
-
-        out = input.clone()
-        assert (
-            self.dim == 0
-        ), "Currently only supporting dropping elements along the 0th dimension"
-        if ind_selected.numel() > 0:
-            out[ind_selected] = out_selected
-        return out
-
+from stopping import (
+    AttentiveStoppingStrategy,
+    DefaultStoppingStrategy,
+    LearnedStoppingStrategy,
+    StickyDropoutStrategy,
+    StoppingContext,
+    StoppingController,
+)
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -358,7 +291,6 @@ class GPTConfig:
     share_moe_experts: bool = False
     scale_loss_by_n_layer: bool = False
     # new experiments
-    layer_dropout: float = 0.0
     sticky_dropout: float = 0.0
     learned_stopping: bool = False
     learned_stopping_warmup_steps: int = 0
@@ -407,9 +339,6 @@ class GPT(nn.Module):
         self.config = config
 
         # new attributes for experiments
-        self.layer_dropout = config.layer_dropout
-        if self.layer_dropout > 0:
-            self.layer_dropout_module = LayerDropout(prob=self.layer_dropout)
         self.sticky_dropout = config.sticky_dropout
         self.learned_stopping = config.learned_stopping
         self.learned_stopping_warmup_steps = config.learned_stopping_warmup_steps
@@ -500,6 +429,13 @@ class GPT(nn.Module):
                 self.recurrent_extra_ln = LayerNorm(config.n_embd, bias=config.bias)
         else:
             self.recurrent_extra_ln = None
+
+        self.stopping_controller = StoppingController([
+            StickyDropoutStrategy(),
+            LearnedStoppingStrategy(),
+            AttentiveStoppingStrategy(),
+            DefaultStoppingStrategy(),
+        ])
 
         mlp_override = None
         if config.moe and config.share_moe_experts:
@@ -611,7 +547,7 @@ class GPT(nn.Module):
                     x = block(x)
                 if self.recurrent_prelude_injection:
                     prelude_output = x.clone()
-            
+
             # Determine the number of recurrent steps
             if self.config.recurrent_shared_weights:
                 # During training, n is sampled and passed. During inference, it can be user-specified.
@@ -619,202 +555,17 @@ class GPT(nn.Module):
             else:
                 num_layers = self.config.n_layer
 
-            if self.sticky_dropout > 0 and self.training:
-                B = x.shape[0]
-                active_mask = torch.ones(B, device=x.device, dtype=torch.bool)
-                num_expanded_layers = 0
-                for _ in range(num_layers):
-                    active_indices = active_mask.nonzero(as_tuple=True)[0]
-                    if active_indices.numel() == 0:
-                        break
-                    
-                    x_active = x[active_indices]
-                    
-                    if self.layer_dropout > 0:
-                        x_active = self.layer_dropout_module(shared_block_fn, x_active)
-                    else:
-                        x_active = shared_block_fn(x_active)
-                    
-                    x[active_indices] = x_active
-                    num_expanded_layers += active_indices.numel() / B
-
-                    # update mask for sticky dropout
-                    drop_probs = torch.full((active_indices.numel(),), self.sticky_dropout, device=x.device)
-                    drops = torch.bernoulli(drop_probs).bool()
-                    active_mask.scatter_(0, active_indices[drops], False)
-
-            elif self.learned_stopping:
-                B = x.shape[0]
-                device = x.device
-                dtype = x.dtype
-                prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
-                num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
-                continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
-                stop_masses = []
-
-                if self.training:
-                    self._stopping_step += 1
-
-                for _ in range(num_layers):
-                    x_in = x
-                    if self.layer_dropout > 0 and self.training:
-                        x_transformed = self.layer_dropout_module(shared_block_fn, x_in)
-                    else:
-                        x_transformed = shared_block_fn(x_in)
-
-                    pooled = x_in.mean(dim=1)
-                    last_token = x_in[:, -1, :]
-                    stop_features = torch.cat((last_token, pooled), dim=-1)
-                    predictor_dtype = self.stop_predictor[0].weight.dtype if isinstance(self.stop_predictor, nn.Sequential) else stop_features.dtype
-                    stop_features = stop_features.to(predictor_dtype)
-                    stop_logits = self.stop_predictor(stop_features).squeeze(-1)
-                    if self.learned_stopping_temperature != 1.0:
-                        stop_logits = stop_logits / self.learned_stopping_temperature
-                    stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
-
-                    if self.training and self._stopping_step <= self.learned_stopping_warmup_steps:
-                        stop_prob = torch.zeros_like(stop_prob)
-                    elif not self.training and self.learned_stopping_use_threshold:
-                        stop_prob = (stop_prob > self.learned_stopping_threshold).to(prob_dtype)
-
-                    if self.training or not self.learned_stopping_use_threshold:
-                        stop_prob = stop_prob.clamp(self.learned_stopping_min_prob, 1.0 - self.learned_stopping_min_prob)
-
-                    stop_mass = continue_probs * stop_prob
-                    stop_masses.append(stop_mass)
-
-                    continue_gate = 1.0 - stop_prob
-                    stop_prob_mix = stop_prob.to(dtype)
-                    continue_gate_mix = continue_gate.to(dtype)
-                    x = stop_prob_mix.view(B, 1, 1) * x_in + continue_gate_mix.view(B, 1, 1) * x_transformed
-
-                    num_expanded_layers_tensor = num_expanded_layers_tensor + (continue_probs * continue_gate)
-                    continue_probs = continue_probs * continue_gate
-
-                residual_mass = continue_probs
-                stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
-                stop_distribution = stop_distribution / stop_distribution.sum(dim=1, keepdim=True)
-
-                depth_mean = num_expanded_layers_tensor.mean()
-                target_depth = self.learned_stopping_target_depth
-                if target_depth is None:
-                    if self.config.recurrent_shared_weights:
-                        reference = float(num_layers)
-                    else:
-                        reference = float(self.config.n_layer)
-                    target_depth = 0.5 * (reference + 1.0)
-
-                depth_target_tensor = depth_mean.new_tensor(target_depth)
-                depth_delta = depth_mean - depth_target_tensor
-                controller_loss = depth_delta ** 2
-                controller_active = not (self.training and self._stopping_step <= self.learned_stopping_warmup_steps)
-                controller_loss = controller_loss * self.learned_stopping_controller_weight if (controller_active and self.learned_stopping_controller_weight > 0) else controller_loss * 0.0
-
-                entropy = -(stop_distribution * torch.log(stop_distribution + 1e-8)).sum(dim=1).mean()
-                entropy_term = -self.learned_stopping_entropy_weight * entropy if (controller_active and self.learned_stopping_entropy_weight > 0) else entropy * 0.0
-
-                if self.training and targets is not None:
-                    aux_loss = (controller_loss + entropy_term).to(dtype)
-                    self.stopping_metrics = {
-                        "mean_depth": depth_mean.detach().item(),
-                        "controller_loss": controller_loss.detach().item(),
-                        "entropy": entropy.detach().item(),
-                        "target_depth": float(target_depth),
-                        "depth_delta": depth_delta.detach().item(),
-                        "controller_active": 1.0 if controller_active else 0.0,
-                    }
-                else:
-                    aux_loss = torch.tensor(0.0, device=device, dtype=dtype)
-                    self.stopping_metrics = None
-
-                num_expanded_layers = depth_mean.item()
-
-            elif self.attentive_stopping:
-                B = x.shape[0]
-                device = x.device
-                dtype = x.dtype
-                prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
-                num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
-                continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
-                stop_masses = []
-
-                if self.training:
-                    self._attentive_stopping_step += 1
-
-                for _ in range(num_layers):
-                    pooled = x.mean(dim=1)
-                    last_token = x[:, -1, :]
-                    stop_features = torch.cat((last_token, pooled), dim=-1)
-                    predictor_dtype = self.stop_predictor[0].weight.dtype if isinstance(self.stop_predictor, nn.Sequential) else stop_features.dtype
-                    stop_features = stop_features.to(predictor_dtype)
-                    stop_logits = self.stop_predictor(stop_features).squeeze(-1)
-                    if self.attentive_stopping_temperature != 1.0:
-                        stop_logits = stop_logits / self.attentive_stopping_temperature
-                    stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
-
-                    if self.training and self._attentive_stopping_step <= self.attentive_stopping_warmup_steps:
-                        stop_prob = torch.zeros_like(stop_prob)
-                    elif not self.training and self.attentive_stopping_use_threshold:
-                        stop_prob = (stop_prob > self.attentive_stopping_threshold).to(prob_dtype)
-                    
-                    if self.training or not self.attentive_stopping_use_threshold:
-                        stop_prob = stop_prob.clamp(self.attentive_stopping_min_prob, 1.0 - self.attentive_stopping_min_prob)
-
-                    stop_mass = continue_probs * stop_prob
-                    stop_masses.append(stop_mass)
-
-                    continue_gate = 1.0 - stop_prob
-                    x = shared_block_fn(x, gate=continue_gate.to(dtype).view(B, 1, 1))
-
-                    num_expanded_layers_tensor = num_expanded_layers_tensor + (continue_probs * continue_gate)
-                    continue_probs = continue_probs * continue_gate
-
-                residual_mass = continue_probs
-                stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
-                stop_distribution = stop_distribution / stop_distribution.sum(dim=1, keepdim=True)
-
-                depth_mean = num_expanded_layers_tensor.mean()
-                target_depth = self.attentive_stopping_target_depth
-                if target_depth is None:
-                    if self.config.recurrent_shared_weights:
-                        reference = float(num_layers)
-                    else:
-                        reference = float(self.config.n_layer)
-                    target_depth = 0.5 * (reference + 1.0)
-                
-                depth_target_tensor = depth_mean.new_tensor(target_depth)
-                depth_delta = depth_mean - depth_target_tensor
-                controller_loss = depth_delta ** 2
-                controller_active = not (self.training and self._attentive_stopping_step <= self.attentive_stopping_warmup_steps)
-                controller_loss = controller_loss * self.attentive_stopping_controller_weight if (controller_active and self.attentive_stopping_controller_weight > 0) else controller_loss * 0.0
-
-                entropy = -(stop_distribution * torch.log(stop_distribution + 1e-8)).sum(dim=1).mean()
-                entropy_term = -self.attentive_stopping_entropy_weight * entropy if (controller_active and self.attentive_stopping_entropy_weight > 0) else entropy * 0.0
-
-                if self.training and targets is not None:
-                    aux_loss = (controller_loss + entropy_term).to(dtype)
-                    self.attentive_stopping_metrics = {
-                        "mean_depth": depth_mean.detach().item(),
-                        "controller_loss": controller_loss.detach().item(),
-                        "entropy": entropy.detach().item(),
-                        "target_depth": float(target_depth),
-                        "depth_delta": depth_delta.detach().item(),
-                        "controller_active": 1.0 if controller_active else 0.0,
-                    }
-                else:
-                    aux_loss = torch.tensor(0.0, device=device, dtype=dtype)
-                    self.attentive_stopping_metrics = None
-                
-                num_expanded_layers = depth_mean.item()
-
-            else:
-                # original logic + layer_dropout
-                num_expanded_layers = num_layers
-                for _ in range(num_layers):
-                    if self.layer_dropout > 0 and self.training:
-                        x = self.layer_dropout_module(shared_block_fn, x)
-                    else:
-                        x = shared_block_fn(x)
+            ctx = StoppingContext(
+                x=x,
+                shared_block_fn=shared_block_fn,
+                num_layers=num_layers,
+                targets=targets,
+                aux_loss=aux_loss,
+            )
+            stopping_result = self.stopping_controller.run(self, ctx)
+            x = stopping_result.x
+            aux_loss = stopping_result.aux_loss
+            num_expanded_layers = stopping_result.num_expanded_layers
             if self.fixed_edge_blocks and self.fixed_tail is not None:
                 for block in self.fixed_tail:
                     x = block(x)

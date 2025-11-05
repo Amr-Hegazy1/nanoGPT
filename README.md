@@ -277,17 +277,6 @@ This experiment allows you to share the same set of experts across all layers of
         python train.py --moe=True --share_moe_experts=True
         ```
 
-### Layer Dropout (Experimental)
-
-This experiment applies dropout to entire layers within a recurrent block. It can be used as a form of regularization.
-
-*   **How to use:**
-    *   To enable Layer Dropout during training, use the following flag with a recurrent model:
-        ```bash
-        python train.py --recurrent_shared_weights=True --layer_dropout=<prob>
-        ```
-    *   `<prob>` is the probability of dropping a layer (e.g., 0.1).
-
 ### Sticky Dropout (Experimental)
 
 In a recurrent setting, this experiment implements a "sticky" dropout where once a sequence in a batch is "dropped," it remains dropped for all subsequent recurrent steps. This can be used to simulate sequences "finishing" at different times.
