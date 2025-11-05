@@ -85,20 +85,6 @@ python sample.py --out_dir=$EXP6_DIR > $EXP6_DIR/samples.txt
 # Base for this section: Recurrent Shared Weights (like Exp 3)
 BASE_RECURRENT_ARGS="$CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=4 --log_correlation=True --recurrent_depth_peak=32"
 
-# Experiment 7: Recurrent Shared Weights with Layer Dropout
-echo "Running experiment 7: Recurrent Shared Weights with Layer Dropout"
-EXP7_DIR="out-gpt2-recurrent-layer-dropout"
-$TRAIN_CMD $BASE_RECURRENT_ARGS --layer_dropout=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-layer-dropout" --out_dir=$EXP7_DIR
-python sample.py --out_dir=$EXP7_DIR > $EXP7_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP7_DIR
-
-# Experiment 8: Recurrent Shared Weights with Layer Dropout + Loss Scaling
-echo "Running experiment 8: Recurrent Shared Weights with Layer Dropout + Loss Scaling"
-EXP8_DIR="out-gpt2-recurrent-layer-dropout-loss-scaling"
-$TRAIN_CMD $BASE_RECURRENT_ARGS --layer_dropout=0.1 --scale_loss_by_n_layer=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-layer-dropout-loss-scaling" --out_dir=$EXP8_DIR
-python sample.py --out_dir=$EXP8_DIR > $EXP8_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP8_DIR
-
 # Experiment 9: Recurrent Shared Weights with Sticky Dropout
 echo "Running experiment 9: Recurrent Shared Weights with Sticky Dropout"
 EXP9_DIR="out-gpt2-recurrent-sticky-dropout"
