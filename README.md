@@ -306,6 +306,23 @@ This experiment introduces a differentiable gating head that blends the shared b
 *   **Logging:** When enabled, the training loop logs `mean_depth`, controller loss, entropy, and the instantaneous target depth so you can track convergence of the learned policy.
 *   **Per-token mode:** Add `--stopping_tokenwise=True` to make the gate operate on each token rather than on whole sequences.
 
+### Depth Curriculum (Experimental)
+
+Instead of randomly sampling recurrent depth, you can step through depths in a curriculum.
+
+*   **How to use:**
+    *   Ascending schedule (start at 1, increase by 1 every 1k iters until `recurrent_depth`):
+        ```bash
+        python train.py --share_parameters_across_layers=True --recurrent_shared_weights=True \
+            --recurrent_depth_schedule=ascending --recurrent_depth_schedule_interval=1000
+        ```
+    *   Descending schedule (start at `recurrent_depth`, decrease toward 1):
+        ```bash
+        python train.py --share_parameters_across_layers=True --recurrent_shared_weights=True \
+            --recurrent_depth_schedule=descending --recurrent_depth_schedule_interval=1000
+        ```
+    *   Tweak `--recurrent_depth_schedule_interval`, `--recurrent_depth_schedule_min_depth`, and optionally `--recurrent_depth_schedule_resample_prob=0.1` to occasionally fall back to the original random sampler. Any other value (default `random`) preserves the previous sampling behaviour.
+
 
 ## efficiency notes
 

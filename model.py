@@ -311,6 +311,7 @@ class GPTConfig:
     attentive_stopping_min_prob: float = 1e-4
     attentive_stopping_use_threshold: bool = False
     attentive_stopping_threshold: float = 0.5
+    sandwich_norm: bool = False
     stopping_tokenwise: bool = False
     fixed_edge_blocks: bool = False
     n_layers_prelude: int = 1
