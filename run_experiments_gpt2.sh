@@ -4,7 +4,7 @@
 CONFIG="config/train_gpt2.py"
 WANDB_PROJECT="nanoGPT-experiments-gpt2"
 
-# DDP settings
+# DDP settings (set to "true" or "false")
 DDP=true
 NPROC_PER_NODE=2
 
@@ -12,7 +12,20 @@ NPROC_PER_NODE=2
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --ddp)
+            if [[ -n "${2:-}" && "${2:0:2}" != "--" ]]; then
+                DDP="$2"
+                shift 2
+            else
+                DDP=true
+                shift
+            fi
+            ;;
+        --ddp=true|--ddp=True|--ddp=1)
             DDP=true
+            shift
+            ;;
+        --ddp=false|--ddp=False|--ddp=0|--no-ddp)
+            DDP=false
             shift
             ;;
         --nproc)
@@ -26,8 +39,15 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 
+# Normalise DDP flag
+case "$DDP" in
+    true|True|1)   DDP_ENABLED=true ;;
+    false|False|0) DDP_ENABLED=false ;;
+    *)             echo "Invalid value for --ddp: $DDP (expected true/false)"; exit 1 ;;
+esac
+
 # Set training command based on DDP flag
-if [ "$DDP" = true ]; then
+if [ "$DDP_ENABLED" = true ]; then
     TRAIN_CMD="torchrun --standalone --nproc_per_node=$NPROC_PER_NODE train.py"
 else
     TRAIN_CMD="python train.py"
@@ -241,7 +261,7 @@ python plot_recurrent_loss.py --out_dir=$EXP22_DIR
 # Experiment 23: Recurrent Shared Weights with RMS Norm + Learned Stopping
 echo "Running experiment 23: Recurrent Shared Weights with RMS Norm + Learned Stopping"
 EXP23_DIR="out-gpt2-recurrent-rms-norm-learned-stopping"
-$TRAIN_CMD $BASE_RECURRENT_RMS_ARGS --learned_stopping=True --wandb_log=.True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-rms-norm-learned-stopping" --out_dir=$EXP23_DIR
+$TRAIN_CMD $BASE_RECURRENT_RMS_ARGS --learned_stopping=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-rms-norm-learned-stopping" --out_dir=$EXP23_DIR
 python sample.py --out_dir=$EXP23_DIR > $EXP23_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP23_DIR
 
@@ -259,13 +279,35 @@ $TRAIN_CMD $BASE_RECURRENT_ARGS --attentive_stopping=True --fixed_edge_blocks=Tr
 python sample.py --out_dir=$EXP25_DIR > $EXP25_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP25_DIR
 
-# Experiment 26: Sandwich Norm with LayerNorm
-echo "Running experiment 26: Sandwich Norm with LayerNorm"
-EXP26_DIR="out-gpt2-sandwich-norm-layernorm"
-$TRAIN_CMD $CONFIG --sandwich_norm=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="sandwich-norm-layernorm" --out_dir=$EXP26_DIR --compile=False --batch_size=4 --log_correlation=True
+# Experiment 26: Recurrent Sandwich Norm with LayerNorm
+echo "Running experiment 26: Recurrent Sandwich Norm with LayerNorm"
+EXP26_DIR="out-gpt2-recurrent-sandwich-norm-layernorm"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --sandwich_norm=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sandwich-norm-layernorm" --out_dir=$EXP26_DIR
 echo "Sampling from experiment 26"
 python sample.py --out_dir=$EXP26_DIR > $EXP26_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP26_DIR
 
-echo "All experiments complete."
+# Experiment 27: Recurrent Sandwich Norm with RMSNorm
+echo "Running experiment 27: Recurrent Sandwich Norm with RMSNorm"
+EXP27_DIR="out-gpt2-recurrent-sandwich-norm-rmsnorm"
+$TRAIN_CMD $BASE_RECURRENT_RMS_ARGS --sandwich_norm=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sandwich-norm-rmsnorm" --out_dir=$EXP27_DIR
+echo "Sampling from experiment 27"
+python sample.py --out_dir=$EXP27_DIR > $EXP27_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP27_DIR
+
+# Experiment 28: Recurrent Depth Curriculum (Ascending)
+echo "Running experiment 28: Recurrent Depth Curriculum (Ascending)"
+EXP28_DIR="out-gpt2-recurrent-depth-curriculum-ascending"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --recurrent_depth_schedule=ascending --recurrent_depth_schedule_interval=1000 --recurrent_depth_schedule_resample_prob=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-depth-curriculum-ascending" --out_dir=$EXP28_DIR
+python sample.py --out_dir=$EXP28_DIR > $EXP28_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP28_DIR
+
+# Experiment 29: Recurrent Depth Curriculum (Descending)
+echo "Running experiment 29: Recurrent Depth Curriculum (Descending)"
+EXP29_DIR="out-gpt2-recurrent-depth-curriculum-descending"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --recurrent_depth_schedule=descending --recurrent_depth_schedule_interval=1000 --recurrent_depth_schedule_resample_prob=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-depth-curriculum-descending" --out_dir=$EXP29_DIR
+python sample.py --out_dir=$EXP29_DIR > $EXP29_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP29_DIR
+
 
 echo "All experiments complete."

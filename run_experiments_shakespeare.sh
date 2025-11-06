@@ -230,4 +230,32 @@ python train.py $BASE_RECURRENT_ARGS --attentive_stopping=True --fixed_edge_bloc
 python sample.py --out_dir=$EXP25_DIR > $EXP25_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP25_DIR
 
+# Experiment 26: Recurrent Sandwich Norm with RMSNorm
+echo "Running experiment 26: Recurrent Sandwich Norm with RMSNorm"
+EXP26_DIR="out-shakespeare-char-recurrent-sandwich-norm-rmsnorm"
+python train.py $BASE_RECURRENT_RMS_ARGS --sandwich_norm=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sandwich-norm-rmsnorm" --out_dir=$EXP26_DIR
+python sample.py --out_dir=$EXP26_DIR > $EXP26_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP26_DIR
+
+# Experiment 27: Recurrent Sandwich Norm with LayerNorm
+echo "Running experiment 27: Recurrent Sandwich Norm with LayerNorm"
+EXP27_DIR="out-shakespeare-char-recurrent-sandwich-norm-layernorm"
+python train.py $BASE_RECURRENT_ARGS --sandwich_norm=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-sandwich-norm-layernorm" --out_dir=$EXP27_DIR
+python sample.py --out_dir=$EXP27_DIR > $EXP27_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP27_DIR
+
+# Experiment 28: Recurrent Depth Curriculum (Ascending)
+echo "Running experiment 28: Recurrent Depth Curriculum (Ascending)"
+EXP28_DIR="out-shakespeare-char-recurrent-depth-curriculum-ascending"
+python train.py $BASE_RECURRENT_ARGS --recurrent_depth_schedule=ascending --recurrent_depth_schedule_interval=1000 --recurrent_depth_schedule_resample_prob=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-depth-curriculum-ascending" --out_dir=$EXP28_DIR
+python sample.py --out_dir=$EXP28_DIR > $EXP28_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP28_DIR
+
+# Experiment 29: Recurrent Depth Curriculum (Descending)
+echo "Running experiment 29: Recurrent Depth Curriculum (Descending)"
+EXP29_DIR="out-shakespeare-char-recurrent-depth-curriculum-descending"
+python train.py $BASE_RECURRENT_ARGS --recurrent_depth_schedule=descending --recurrent_depth_schedule_interval=1000 --recurrent_depth_schedule_resample_prob=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-depth-curriculum-descending" --out_dir=$EXP29_DIR
+python sample.py --out_dir=$EXP29_DIR > $EXP29_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP29_DIR
+
 echo "All experiments complete."

@@ -43,6 +43,75 @@ def sample_recurrent_depth(max_depth, scale_loss_by_n_layer=False, min_depth=1, 
     sample = np.random.lognormal(mu, sigma)
     return int(np.clip(round(sample), min_depth, max_depth))
 
+
+# Default curriculum parameters (may be overridden later via config/CLI)
+recurrent_depth_schedule = 'random'
+recurrent_depth_schedule_interval = 0
+recurrent_depth_schedule_min_depth = 1
+recurrent_depth_schedule_resample_prob = 0.0
+
+
+def determine_recurrent_depth(
+    step: int,
+    max_depth: int,
+    *,
+    schedule: str = "random",
+    interval: int | float | None = None,
+    min_depth: int = 1,
+    resample_prob: float = 0.0,
+    scale_loss_by_n_layer: bool = False,
+    peak: int = 32,
+) -> int:
+    """
+    Determine the number of recurrent steps to expand according to a curriculum schedule.
+    When schedule is 'random' (default) behaviour matches sample_recurrent_depth.
+    """
+    if max_depth < min_depth:
+        max_depth = min_depth
+
+    schedule = (schedule or "random").lower()
+    if interval is None:
+        interval = 0
+    try:
+        interval = int(interval)
+    except (TypeError, ValueError):
+        interval = 0
+    interval = max(1, interval)
+
+    try:
+        resample_prob_val = float(resample_prob)
+    except (TypeError, ValueError):
+        resample_prob_val = 0.0
+    resample_prob_val = max(0.0, min(1.0, resample_prob_val))
+
+    if resample_prob_val > 0.0 and np.random.rand() < resample_prob_val:
+        return sample_recurrent_depth(
+            max_depth,
+            scale_loss_by_n_layer=scale_loss_by_n_layer,
+            min_depth=min_depth,
+            peak=peak,
+        )
+
+    if schedule in ("ascending", "ascend", "increase", "increasing", "curriculum_up"):
+        stage = step // interval
+        depth = min_depth + stage
+        depth = max(min_depth, min(depth, max_depth))
+        return int(depth)
+
+    if schedule in ("descending", "descend", "decrease", "decreasing", "reverse", "curriculum_down"):
+        stage = step // interval
+        depth = max_depth - stage
+        depth = max(min_depth, min(depth, max_depth))
+        return int(depth)
+
+    # default random sampling
+    return sample_recurrent_depth(
+        max_depth,
+        scale_loss_by_n_layer=scale_loss_by_n_layer,
+        min_depth=min_depth,
+        peak=peak,
+    )
+
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -72,7 +141,7 @@ dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 share_parameters_across_layers = False
 recurrent_shared_weights = False
-ecurrent_depth = 32
+recurrent_depth = 32
 # MoE parameters
 moe = False
 moe_num_experts = 4
@@ -519,7 +588,19 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            n = sample_recurrent_depth(recurrent_depth, scale_loss_by_n_layer, peak=recurrent_depth_peak) if recurrent_shared_weights else None
+            if recurrent_shared_weights:
+                n = determine_recurrent_depth(
+                    iter_num,
+                    recurrent_depth,
+                    schedule=recurrent_depth_schedule,
+                    interval=recurrent_depth_schedule_interval,
+                    min_depth=recurrent_depth_schedule_min_depth,
+                    resample_prob=recurrent_depth_schedule_resample_prob,
+                    scale_loss_by_n_layer=scale_loss_by_n_layer,
+                    peak=recurrent_depth_peak,
+                )
+            else:
+                n = None
             if n is not None:
                 sampled_depths.append(n)
             logits, loss, num_expanded_layers = model(X, Y, n=n)
@@ -646,6 +727,11 @@ recurrent_noise_mode = 'none'
 recurrent_noise_std = 0.0
 recurrent_noise_concat_dim = None
 recurrent_extra_layernorm = False
+# curriculum scheduling for recurrent depth (ascending/descending/random)
+recurrent_depth_schedule = 'random'  # options: 'random', 'ascending', 'descending'
+recurrent_depth_schedule_interval = 0  # iterations per curriculum step; <=0 treated as 1
+recurrent_depth_schedule_min_depth = 1
+recurrent_depth_schedule_resample_prob = 0.0  # probability of falling back to random sampling
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -1043,7 +1129,19 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            n = sample_recurrent_depth(recurrent_depth, scale_loss_by_n_layer, peak=recurrent_depth_peak) if recurrent_shared_weights else None
+            if recurrent_shared_weights:
+                n = determine_recurrent_depth(
+                    iter_num,
+                    recurrent_depth,
+                    schedule=recurrent_depth_schedule,
+                    interval=recurrent_depth_schedule_interval,
+                    min_depth=recurrent_depth_schedule_min_depth,
+                    resample_prob=recurrent_depth_schedule_resample_prob,
+                    scale_loss_by_n_layer=scale_loss_by_n_layer,
+                    peak=recurrent_depth_peak,
+                )
+            else:
+                n = None
             if n is not None:
                 sampled_depths.append(n)
             logits, loss, num_expanded_layers = model(X, Y, n=n)
