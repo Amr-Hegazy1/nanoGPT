@@ -17,9 +17,14 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 """
 
 import os
+import sys
 import time
 import math
+import json
 import pickle
+import random
+import shutil
+import subprocess
 from contextlib import nullcontext
 
 import numpy as np
@@ -42,15 +47,6 @@ def sample_recurrent_depth(max_depth, scale_loss_by_n_layer=False, min_depth=1, 
     mu = np.log(peak) + sigma**2
     sample = np.random.lognormal(mu, sigma)
     return int(np.clip(round(sample), min_depth, max_depth))
-
-
-# Default curriculum parameters (may be overridden later via config/CLI)
-recurrent_depth_schedule = 'random'
-recurrent_depth_schedule_interval = 0
-recurrent_depth_schedule_min_depth = 1
-recurrent_depth_schedule_resample_prob = 0.0
-
-
 def determine_recurrent_depth(
     step: int,
     max_depth: int,
@@ -126,6 +122,9 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 wandb_log = False # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
+wandb_run_id = ''
+wandb_resume = ''
+wandb_init_timeout = 120.0
 # tensorboard logging
 tensorboard_log = True # disabled by default
 # data
@@ -181,6 +180,17 @@ recurrent_noise_mode = 'none'
 recurrent_noise_std = 0.0
 recurrent_noise_concat_dim = None
 recurrent_extra_layernorm = False
+# curriculum scheduling for recurrent depth (ascending/descending/random)
+recurrent_depth_schedule = 'random'  # options: 'random', 'ascending', 'descending'
+recurrent_depth_schedule_interval = 0  # iterations per curriculum step; <=0 treated as 1
+recurrent_depth_schedule_min_depth = 1
+recurrent_depth_schedule_resample_prob = 0.0  # probability of falling back to random sampling
+# hyperparameter tuning (W&B sweeps)
+hyperparameter_tuning = False
+hyperparameter_tuning_trials = 10
+hyperparameter_tuning_max_iters = 200
+hyperparameter_tuning_resume = False
+hyperparameter_tuning_result_path = ''
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -207,6 +217,144 @@ for optional_key in ['learned_stopping_target_depth', 'attentive_stopping_target
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
+# Hyperparameter tuning via local random search
+if hyperparameter_tuning:
+    rank_env = int(os.environ.get('RANK', -1))
+    if rank_env not in (-1, 0):
+        sys.exit(0)
+    base_seed = 1337 + int(time.time())
+    rng = random.Random(base_seed)
+    os.makedirs(out_dir, exist_ok=True)
+
+    skip_prefixes = (
+        "--hyperparameter_tuning",
+        "--hyperparameter_tuning_trials",
+        "--hyperparameter_tuning_max_iters",
+        "--hyperparameter_tuning_result_path",
+        "--learning_rate",
+        "--batch_size",
+        "--weight_decay",
+    )
+
+    base_args: list[str] = []
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if any(arg.startswith(pref) for pref in skip_prefixes):
+            # skip following token as well if the flag is provided without '='
+            if "=" not in arg and (i + 1) < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+                i += 2
+            else:
+                i += 1
+            continue
+        base_args.append(arg)
+        i += 1
+
+    def sample_log_uniform(min_val: float, max_val: float) -> float:
+        return math.exp(rng.uniform(math.log(min_val), math.log(max_val)))
+
+    trial_summaries: list[dict[str, float | int | str]] = []
+    tuning_iters = int(hyperparameter_tuning_max_iters)
+    if tuning_iters <= 0:
+        tuning_iters = 1
+
+    for trial_idx in range(hyperparameter_tuning_trials):
+        trial_num = trial_idx + 1
+        lr = sample_log_uniform(1e-5, 5e-4)
+        wd = sample_log_uniform(1e-6, 1e-2)
+        bs = int(rng.choice([1, 2, 3, 4]))
+        trial_suffix = f"tuning_trial_{trial_num}_{int(time.time())}_{rng.randrange(10_000)}"
+        trial_out_dir = os.path.join(out_dir, trial_suffix)
+        result_path = os.path.join(trial_out_dir, "result.json")
+        os.makedirs(trial_out_dir, exist_ok=True)
+
+        run_args = list(base_args)
+        run_args.extend([
+            f"--learning_rate={lr}",
+            f"--batch_size={bs}",
+            f"--weight_decay={wd}",
+            "--hyperparameter_tuning=False",
+            "--hyperparameter_tuning_resume=True",
+            f"--hyperparameter_tuning_result_path={result_path}",
+            f"--out_dir={trial_out_dir}",
+        ])
+        if not any(a.startswith("--max_iters") for a in run_args):
+            run_args.append(f"--max_iters={tuning_iters}")
+        if not any(a.startswith("--eval_interval") for a in run_args):
+            run_args.append(f"--eval_interval={tuning_iters}")
+        if not any(a.startswith("--log_interval") for a in run_args):
+            log_interval = max(1, tuning_iters // 5)
+            run_args.append(f"--log_interval={log_interval}")
+        run_args.append("--wandb_log=False")
+
+        print(f"[Tuning] Trial {trial_num}/{hyperparameter_tuning_trials}: "
+              f"lr={lr:.3e}, batch_size={bs}, weight_decay={wd:.3e}")
+
+        result_data = None
+        try:
+            subprocess.run([sys.executable, __file__] + run_args, check=True)
+            with open(result_path, 'r', encoding='utf-8') as f:
+                result_data = json.load(f)
+        except subprocess.CalledProcessError as exc:
+            print(f"[Tuning] Trial {trial_num} failed with exit code {exc.returncode}")
+        except FileNotFoundError:
+            print(f"[Tuning] Trial {trial_num} did not produce result file at {result_path}")
+        except json.JSONDecodeError as exc:
+            print(f"[Tuning] Trial {trial_num} produced invalid JSON: {exc}")
+        else:
+            val_loss = result_data.get("val_loss")
+            if val_loss is None:
+                print(f"[Tuning] Trial {trial_num} result missing val_loss")
+            else:
+                try:
+                    val_loss = float(val_loss)
+                except (TypeError, ValueError):
+                    print(f"[Tuning] Trial {trial_num} val_loss is not numeric: {val_loss}")
+                    val_loss = None
+            if val_loss is not None:
+                trial_summaries.append({
+                    "trial": trial_num,
+                    "learning_rate": lr,
+                    "batch_size": bs,
+                    "weight_decay": wd,
+                    "val_loss": val_loss,
+                })
+                print(f"[Tuning] Trial {trial_num} completed with val_loss={val_loss:.4f}")
+        finally:
+            try:
+                if os.path.exists(result_path):
+                    os.remove(result_path)
+            except OSError:
+                pass
+            shutil.rmtree(trial_out_dir, ignore_errors=True)
+
+    successful_trials = [t for t in trial_summaries if math.isfinite(t["val_loss"])]
+    if not successful_trials:
+        print("[Tuning] All trials failed; aborting.")
+        sys.exit(1)
+
+    best_trial = min(successful_trials, key=lambda t: t["val_loss"])
+    print(f"[Tuning] Best trial #{best_trial['trial']} -> "
+          f"val_loss={best_trial['val_loss']:.4f}, "
+          f"lr={best_trial['learning_rate']:.3e}, "
+          f"batch_size={int(best_trial['batch_size'])}, "
+          f"weight_decay={best_trial['weight_decay']:.3e}")
+
+    final_args = list(base_args)
+    final_args.extend([
+        f"--learning_rate={best_trial['learning_rate']}",
+        f"--batch_size={int(best_trial['batch_size'])}",
+        f"--weight_decay={best_trial['weight_decay']}",
+        "--hyperparameter_tuning=False",
+        "--hyperparameter_tuning_resume=False",
+    ])
+    if not any(a.startswith("--wandb_log") for a in final_args):
+        final_args.append("--wandb_log=True")
+
+    print("[Tuning] Launching full training run with best hyperparameters.")
+    subprocess.run([sys.executable, __file__] + final_args, check=True)
+    sys.exit(0)
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -497,7 +645,45 @@ def get_lr(it):
 # logging
 if wandb_log and master_process:
     import wandb
-    wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+
+    init_kwargs = {
+        "project": wandb_project,
+        "name": wandb_run_name,
+    }
+    run_id = wandb_run_id.strip() if isinstance(wandb_run_id, str) else wandb_run_id
+    resume_mode = wandb_resume.strip() if isinstance(wandb_resume, str) else wandb_resume
+    if run_id:
+        init_kwargs["id"] = run_id
+        init_kwargs["resume"] = resume_mode if resume_mode else "allow"
+    else:
+        init_kwargs["config"] = config
+    timeout_val = None
+    try:
+        timeout_val = float(wandb_init_timeout)
+    except (TypeError, ValueError):
+        timeout_val = None
+    if timeout_val and timeout_val > 0:
+        init_kwargs["settings"] = wandb.Settings(init_timeout=timeout_val)
+
+    comm_error = getattr(wandb, "errors", None)
+    comm_exception = getattr(comm_error, "CommError", Exception) if comm_error else Exception
+    try:
+        wandb.init(**init_kwargs)
+        if run_id and isinstance(config, dict):
+            try:
+                wandb.config.update(config, allow_val_change=True)
+            except Exception:
+                pass
+    except comm_exception as err:
+        print(f"wandb.init failed ({err}); disabling wandb logging.")
+        wandb_log = False
+        if isinstance(config, dict):
+            config['wandb_log'] = False
+    except Exception as err:
+        print(f"wandb.init failed ({err.__class__.__name__}: {err}); disabling wandb logging.")
+        wandb_log = False
+        if isinstance(config, dict):
+            config['wandb_log'] = False
 
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
@@ -665,7 +851,7 @@ while True:
     local_iter_num += 1
 
     # termination conditions
-    if iter_num > max_iters:
+    if iter_num >= max_iters:
         break
 
 if tensorboard_log and master_process:
@@ -674,6 +860,9 @@ if tensorboard_log and master_process:
 if ddp:
     destroy_process_group()
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
+wandb_run_id = ''
+wandb_resume = ''
+wandb_init_timeout = 120.0
 # tensorboard logging
 tensorboard_log = True # disabled by default
 # data
@@ -732,6 +921,11 @@ recurrent_depth_schedule = 'random'  # options: 'random', 'ascending', 'descendi
 recurrent_depth_schedule_interval = 0  # iterations per curriculum step; <=0 treated as 1
 recurrent_depth_schedule_min_depth = 1
 recurrent_depth_schedule_resample_prob = 0.0  # probability of falling back to random sampling
+# hyperparameter tuning (W&B sweeps)
+hyperparameter_tuning = False
+hyperparameter_tuning_trials = 10
+hyperparameter_tuning_max_iters = 200
+hyperparameter_tuning_resume = False
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -1038,7 +1232,34 @@ def get_lr(it):
 # logging
 if wandb_log and master_process:
     import wandb
-    wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+
+    init_kwargs = {
+        "project": wandb_project,
+        "name": wandb_run_name,
+        "config": config,
+    }
+    timeout_val = None
+    try:
+        timeout_val = float(wandb_init_timeout)
+    except (TypeError, ValueError):
+        timeout_val = None
+    if timeout_val and timeout_val > 0:
+        init_kwargs["settings"] = wandb.Settings(init_timeout=timeout_val)
+
+    comm_error = getattr(wandb, "errors", None)
+    comm_exception = getattr(comm_error, "CommError", Exception) if comm_error else Exception
+    try:
+        wandb.init(**init_kwargs)
+    except comm_exception as err:
+        print(f"wandb.init failed ({err}); disabling wandb logging.")
+        wandb_log = False
+        if isinstance(config, dict):
+            config['wandb_log'] = False
+    except Exception as err:
+        print(f"wandb.init failed ({err.__class__.__name__}: {err}); disabling wandb logging.")
+        wandb_log = False
+        if isinstance(config, dict):
+            config['wandb_log'] = False
 
 # training loop
 X, Y = get_batch('train') # fetch the very first batch
@@ -1208,6 +1429,21 @@ while True:
     # termination conditions
     if iter_num > max_iters:
         break
+
+if hyperparameter_tuning_result_path:
+    tuning_payload = {
+        "val_loss": float(best_val_loss),
+        "completed_iters": int(iter_num),
+        "timestamp": time.time(),
+    }
+    result_dir = os.path.dirname(hyperparameter_tuning_result_path)
+    try:
+        if result_dir:
+            os.makedirs(result_dir, exist_ok=True)
+        with open(hyperparameter_tuning_result_path, 'w', encoding='utf-8') as f:
+            json.dump(tuning_payload, f)
+    except OSError as exc:
+        print(f"Warning: could not write tuning result to {hyperparameter_tuning_result_path}: {exc}")
 
 if tensorboard_log and master_process:
     writer.close()

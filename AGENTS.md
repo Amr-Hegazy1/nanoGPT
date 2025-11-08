@@ -1,32 +1,46 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `model.py` hosts the GPT backbone plus experimental modules (Mixture of Experts, recurrent shared weights, stop predictors).
-- `train.py` contains the training loop; reusable configurations live in `config/`, and shell helpers like `run_experiments_gpt2.sh` stage common sweeps.
-- `data/` stores tokenized corpora produced by `configurator.py`; `assets/` holds plots and shared artifacts; notebooks (`scaling_laws.ipynb`, `transformer_sizing.ipynb`) capture exploratory research.
-- Utility entry points include `bench.py` for throughput checks and `sample.py` for text generation demos.
+- Core training logic lives in `train.py`, while `model.py` houses the GPT blocks (`GPTConfig`, `GPT`) and should stay import-safe.
+- Reusable experiment settings sit under `config/`; treat them as single sources of truth for hyperparameters instead of hardcoding flags in scripts.
+- Dataset tooling is kept in `data/<dataset_name>/` with each directory exposing a `prepare.py` that writes `train.bin` / `val.bin`.
+- Outputs default to `out/` or dataset-specific folders such as `out-shakespeare-char`; keep large checkpoints out of version control.
+- Utility scripts (`bench.py`, `sample.py`, `run_experiments_*.sh`) assume the repo root as the working directory.
 
 ## Build, Test, and Development Commands
-- `python -m venv .venv && source .venv/bin/activate` creates an isolated environment.
-- `pip install -r requirements.txt` installs the PyTorch and logging stack used across scripts.
-- `python train.py config/train_shakespeare_char.py` runs the smallest end-to-end training smoke test.
-- `python train.py --share_parameters_across_layers=True --recurrent_shared_weights=True --max_iters=100 --eval_iters=20` quickly exercises the recurrent-depth pathway.
-- `python bench.py` benchmarks forward/backward passes on the current hardware.
+- ```sh
+  python data/shakespeare_char/prepare.py
+  ```  
+  Download and tokenize Tiny Shakespeare into binary shards; mirrors how other datasets should be staged.
+- ```sh
+  python train.py config/train_shakespeare_char.py
+  ```  
+  Reference training run for single-GPU debugging; override flags inline for quick experiments.
+- ```sh
+  torchrun --standalone --nproc_per_node=4 train.py
+  ```  
+  Distributed launch template; adjust `nnodes`, `master_addr`, and `out_dir` before committing.
+- ```sh
+  python sample.py --out_dir=out-shakespeare-char
+  ```  
+  Smoke-test checkpoints and surface regressions in generated text.
+- ```sh
+  python bench.py --device=cuda --compile=True
+  ```  
+  Sanity-check PyTorch compile speedups before pushing performance claims.
 
 ## Coding Style & Naming Conventions
-- Use Python 3.10+ with 4-space indentation and follow the existing PEP8-style layout; keep imports grouped (stdlib, third-party, local).
-- Modules, configs, and flags use snake_case (e.g., `recurrent_shared_weights`, `train_gpt2.py`); experiment toggles should mirror the corresponding config attribute names.
-- Prefer dataclasses for new configuration surfaces and high-signal comments for non-obvious experimental logic; avoid verbose inline commentary.
-- Maintain reproducibility by documenting new command-line flags in the relevant config or script docstring.
+- Follow existing Python style: 4-space indent, explicit imports, and lowercase_snake_case for variables, configs, and CLI flags.
+- Keep configuration dictionaries or `argparse` overrides together near the top of files; document non-obvious magic numbers inline.
+- Prefer torch/numpy vectorization over Python loops; wrap experimental code with feature flags so defaults remain stable.
+- Type hints are optional but appreciated for public functions and dataclasses that appear in configs.
 
 ## Testing Guidelines
-- There is no formal unit-test suite; validate changes with targeted training runs and log traces.
-- Add or update a config under `config/` to reproduce new behaviour, then run `python train.py <config_path> --max_iters=200 --eval_only=True` to sanity-check loss paths.
-- Use `plot_recurrent_loss.py --out_dir=out/diagnostics` when tuning expansion heuristics and attach the generated plot to discussion threads if it shifts behaviour.
-- Capture tensorboard or wandb screenshots for significant training changes and reference them in the PR body.
+- Treat short training runs (`--max_iters` small) as integration tests; they must finish without CUDA OOMs and log decreasing loss.
+- For regression checks, run `python train.py <config> --eval_only=True --init_from=<checkpoint>` to ensure loading and metrics stay stable.
+- Add reproducible seeds in new scripts and capture expected metrics in the PR description; if adding datasets, include a `prepare.py` that can run offline.
 
 ## Commit & Pull Request Guidelines
-- Follow the existing Conventional Commit style (`feat:`, `refactor:`, `fix:`) in imperative mood and keep each commit focused on one logical change.
-- Include paired updates (configs, assets, docs) in the same PR to keep experiments reproducible; note any migration steps in the description.
-- PR summaries should cover motivation, new flags, reproduction commands, and observed metrics; link issues or experiment notes when available.
-- Highlight compatibility considerations (checkpoint format, required datasets) and flag follow-up work or risks before requesting review.
+- Follow the prevalent Git style: subject lines in imperative mood (`"add fused mha kernel"`), <=72 chars, body explaining motivation and validation.
+- Keep PRs focused (model change vs. data tooling) and describe: what changed, configs used, hardware, and validation commands/log snippets.
+- Link tracking issues or research notes, flag breaking API changes up top, and include screenshots of dashboards (W&B/TensorBoard) when visual evidence supports the claim.

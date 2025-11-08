@@ -228,7 +228,7 @@ python plot_recurrent_loss.py --out_dir=$EXP18_DIR
 # Experiment 19: Recurrent Shared Weights with Learned Stopping, Fixed Edge, and Noise
 echo "Running experiment 19: Recurrent Shared Weights with Learned Stopping, Fixed Edge, and Noise"
 EXP19_DIR="out-gpt2-recurrent-learned-stopping-fixed-edge-noise"
-$TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-fixed-edge-noise" --out_dir=$EXP19_DIR
+$TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --hyperparameter_tuning=True --hyperparameter_tuning_trials=12 --hyperparameter_tuning_max_iters=300 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-fixed-edge-noise" --out_dir=$EXP19_DIR
 python sample.py --out_dir=$EXP19_DIR > $EXP19_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP19_DIR
 
