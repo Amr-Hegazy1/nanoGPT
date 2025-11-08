@@ -323,6 +323,16 @@ Instead of randomly sampling recurrent depth, you can step through depths in a c
         ```
     *   Tweak `--recurrent_depth_schedule_interval`, `--recurrent_depth_schedule_min_depth`, and optionally `--recurrent_depth_schedule_resample_prob=0.1` to occasionally fall back to the original random sampler. Any other value (default `random`) preserves the previous sampling behaviour.
 
+### Hyperparameter Tuning (Experimental)
+
+Enable automated sweeps over learning rate, batch size, and weight decay by toggling:
+
+```bash
+python train.py ... --hyperparameter_tuning=True
+```
+
+The controller process (rank 0) creates a W&B random-search sweep (default 10 trials) and re-launches `train.py` with each sampled configuration. Each trial only runs for a limited number of steps (`--hyperparameter_tuning_max_iters`, default 200) so you get quick signal without exhausting resources. Override the number of trials with `--hyperparameter_tuning_trials=<int>` and the per-trial horizon with `--hyperparameter_tuning_max_iters=<int>` if desired. Each child run logs metrics to the configured W&B project and respects any other CLI flags you pass.
+
 
 ## efficiency notes
 

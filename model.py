@@ -50,6 +50,8 @@ class RMSNorm(nn.Module):
 
 
 def gate_act_fn_clamp(x: torch.Tensor) -> torch.Tensor:
+    # Helper for gating experiments: interpret x as a stop signal and produce a
+    # "continue" probability in [0, 1]. Higher values -> more compute contribution.
     return 1 - torch.clamp(x, 0, 1)
 
 
@@ -104,7 +106,8 @@ class CausalSelfAttention(nn.Module):
             # efficient attention using Flash Attention CUDA kernels
             attn_mask = None
             if gate is not None:
-                # Build additive bias from gate and expand to (B, H, T, T) with contiguous last dim
+                # Build additive bias from the gate ("continue" prob). Smaller gates reduce effective
+                # attention scores, tapering compute. Expand to (B, H, T, T) with contiguous last dim.
                 base_bias = apply_score_mod(None, gate)  # shape (B, 1, 1, 1) or (B, 1, L, S)
                 attn_mask = base_bias.to(q.dtype).expand(B, self.n_head, q.size(-2), k.size(-2)).contiguous()
             y = torch.nn.functional.scaled_dot_product_attention(
@@ -122,6 +125,7 @@ class CausalSelfAttention(nn.Module):
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
             if gate is not None:
+                # Gate is the "continue" probability; convert to additive bias in attention space.
                 gate_bias = apply_score_mod(None, gate).to(att.dtype)
                 att = att + gate_bias
             att = F.softmax(att, dim=-1)
@@ -202,6 +206,7 @@ class Block(nn.Module):
 
         attn_out = self.attn(self.ln_1(x), gate=gate)
         if self.apply_gate_to_residual and gate is not None:
+            # Scale residual contribution by the "continue" probability from the stopping controller.
             attn_out = attn_out * gate.to(attn_out.dtype)
         x = x + attn_out
         if self.sandwich_norm:
@@ -209,6 +214,7 @@ class Block(nn.Module):
 
         mlp_out = self.mlp(self.ln_2(x))
         if self.apply_gate_to_residual and gate is not None:
+            # Scale MLP residual by the same gate so both paths taper consistently.
             mlp_out = mlp_out * gate.to(mlp_out.dtype)
         x = x + mlp_out
         if self.sandwich_norm:
@@ -385,6 +391,8 @@ class GPT(nn.Module):
                 nn.Linear(config.n_embd, 1),
             )
             final_layer = self.stop_predictor[-1]
+            # Initialize final layer to zeros for a stable start (near-zero logits). Combine with
+            # warmup if you want to begin with an effectively open gate during early training.
             nn.init.zeros_(final_layer.weight)
             nn.init.zeros_(final_layer.bias)
             self.attentive_stopping_metrics = {}
