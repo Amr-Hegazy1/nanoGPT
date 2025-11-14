@@ -39,7 +39,7 @@ for arg in sys.argv[1:]:
     else:
         # assume it's a --key=value argument
         assert arg.startswith('--')
-        key, val = arg.split('=')
+        key, val = arg.split('=', 1)
         key = key[2:]
         if key in globals():
             try:
@@ -49,7 +49,10 @@ for arg in sys.argv[1:]:
                 # if that goes wrong, just use the string
                 attempt = val
             # ensure the types match ok
-            assert type(attempt) == type(globals()[key]), f'Type mismatch for key {key}: expected {type(globals()[key])} but got {type(attempt)}'
+            current_val = globals()[key]
+            if current_val is not None and attempt is not None:
+                # optional args often default to None, only enforce types when both sides are concrete
+                assert type(attempt) == type(current_val), f'Type mismatch for key {key}: expected {type(current_val)} but got {type(attempt)}'
             # cross fingers
             print(f"Overriding: {key} = {attempt}")
             globals()[key] = attempt

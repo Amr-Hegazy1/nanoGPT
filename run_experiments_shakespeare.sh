@@ -258,4 +258,25 @@ python train.py $BASE_RECURRENT_ARGS --recurrent_depth_schedule=descending --rec
 python sample.py --out_dir=$EXP29_DIR > $EXP29_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP29_DIR
 
+# Experiment 30: Recurrent Depth Curriculum (Cyclical)
+echo "Running experiment 30: Recurrent Depth Curriculum (Cyclical)"
+EXP30_DIR="out-shakespeare-char-recurrent-depth-curriculum-cyclical"
+python train.py $BASE_RECURRENT_ARGS --recurrent_depth_schedule=cyclical --recurrent_depth_schedule_interval=400 --recurrent_depth_schedule_opts='cycle_length=8' --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-depth-curriculum-cyclical" --out_dir=$EXP30_DIR
+python sample.py --out_dir=$EXP30_DIR > $EXP30_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP30_DIR
+
+# Experiment 31: Recurrent Depth Curriculum (Random Walk)
+echo "Running experiment 31: Recurrent Depth Curriculum (Random Walk)"
+EXP31_DIR="out-shakespeare-char-recurrent-depth-curriculum-random-walk"
+python train.py $BASE_RECURRENT_ARGS --recurrent_depth_schedule=random_walk --recurrent_depth_schedule_interval=500 --recurrent_depth_schedule_opts='step_size=2,reset_prob=0.05' --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-depth-curriculum-random-walk" --out_dir=$EXP31_DIR
+python sample.py --out_dir=$EXP31_DIR > $EXP31_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP31_DIR
+
+# Experiment 32: Performance-Aware Curriculum
+echo "Running experiment 32: Performance-Aware Curriculum"
+EXP32_DIR="out-shakespeare-char-recurrent-depth-curriculum-performance"
+python train.py $BASE_RECURRENT_ARGS --recurrent_depth_schedule=performance --recurrent_depth_schedule_interval=500 --recurrent_depth_schedule_opts='patience=8,tolerance=5e-4,warmup_intervals=4' --recurrent_depth_schedule_feedback_alpha=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-depth-curriculum-performance" --out_dir=$EXP32_DIR
+python sample.py --out_dir=$EXP32_DIR > $EXP32_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP32_DIR
+
 echo "All experiments complete."
