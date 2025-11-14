@@ -223,7 +223,7 @@ This experiment allows you to reuse a single shared transformer block `n` times.
 
 *   **Fixed Edge Blocks:** Use `--fixed_edge_blocks=True` to keep a configurable number of Transformer blocks unshared at the beginning and end of the network, while looping a single shared block in the middle. The number of prelude and coda layers can be set with `--n_layers_prelude` and `--n_layers_coda`.
 
-*   **Prelude Injection:** Use `--recurrent_prelude_injection=True` to inject the output of the prelude block into each recurrent block. This is similar to the `add` injection type in the `recurrent-pretraining` repository. This option requires `--fixed_edge_blocks=True` to be set.
+*   **Prelude Injection:** Use `--recurrent_prelude_injection=True` to inject the output of the prelude block into each recurrent block. Choose how it mixes in with `--recurrent_prelude_injection_mode=add|concat` (default `add`). The `concat` mode concatenates the prelude activations with the recurrent input and projects them back to the model width, mirroring the `add`/`concat` options from the `recurrent-pretraining` repository. This option requires `--fixed_edge_blocks=True` to be set.
 
 *   **Recurrent Noise:** Inject noise before each shared layer with `--recurrent_noise_mode=add|concat`, combining it with `--recurrent_noise_std=<float>` (and `--recurrent_noise_concat_dim=<int>` when concatenating).
 
@@ -306,6 +306,24 @@ This experiment introduces a differentiable gating head that blends the shared b
 *   **Logging:** When enabled, the training loop logs `mean_depth`, controller loss, entropy, and the instantaneous target depth so you can track convergence of the learned policy.
 *   **Per-token mode:** Add `--stopping_tokenwise=True` to make the gate operate on each token rather than on whole sequences.
 
+### Oracle Stopping (Experimental)
+
+Bootstraps a stop/difficulty head from a *target network* that lags behind the current model. Every `oracle_update_interval` steps the student weights are copied into a frozen teacher; the teacher labels each token with the earliest layer that predicts it correctly, while the student learns to (1) halt at the oracle layer and (2) regress the normalized difficulty.
+
+*   **How to use:**
+    *   Enable the head and pick an update cadence:
+        ```bash
+        python train.py --share_parameters_across_layers=True --recurrent_shared_weights=True \
+            --oracle_stopping=True --oracle_update_interval=250 --stopping_tokenwise=True
+        ```
+    *   Optional knobs:
+        *   `--oracle_bootstrap_checkpoint=<path>` seeds the very first teacher from a previous run; otherwise the teacher starts as a copy of the freshly initialised student.
+        *   `--oracle_stop_weight` / `--oracle_difficulty_weight` scale the BCE/MSE supervision terms.
+        *   `--oracle_max_depth` caps how many recurrent steps the oracle evaluates (defaults to the student’s depth).
+        *   `--oracle_temperature`, `--oracle_min_prob`, and `--oracle_use_threshold/--oracle_threshold` control how sharp the stop gate is.
+    *   The oracle runs only when labels are available (training or eval); at inference the learned head alone determines when to stop.
+*   **Logging:** `model.oracle_metrics` reports mean expanded depth, BCE loss, and difficulty regression loss so you can monitor agreement between the student gate and the frozen teacher.
+
 ### Depth Curriculum (Experimental)
 
 Instead of randomly sampling recurrent depth, you can step through depths in a curriculum.
@@ -321,7 +339,24 @@ Instead of randomly sampling recurrent depth, you can step through depths in a c
         python train.py --share_parameters_across_layers=True --recurrent_shared_weights=True \
             --recurrent_depth_schedule=descending --recurrent_depth_schedule_interval=1000
         ```
-    *   Tweak `--recurrent_depth_schedule_interval`, `--recurrent_depth_schedule_min_depth`, and optionally `--recurrent_depth_schedule_resample_prob=0.1` to occasionally fall back to the original random sampler. Any other value (default `random`) preserves the previous sampling behaviour.
+    *   Additional strategies unlocked via `--recurrent_depth_schedule=<name>`:
+        *   `cyclical` / `cycle`: sawtooth pattern that ramps depth up for `cycle_length` stages before resetting.
+        *   `staircase`: hold the same depth for `stair_width` intervals before stepping up.
+        *   `exponential`: grow depth multiplicatively (`growth_factor`, default 1.5) to spend longer at shallower expansions.
+        *   `random_walk`: jitter depth with bounded noise (`step_size`, optional `reset_prob`) to keep curricula stochastic.
+        *   `two_phase`: alternate between a shallow steady phase and brief max-depth bursts (`steady_intervals`, `burst_intervals`).
+        *   `performance`: monitor the EMA of the training loss and only climb deeper when the metric improves (falls back to shallower depths after repeated regressions).
+        *   `difficulty`: map a normalized difficulty score (derived from the recent loss ratio or provided externally) to depth so easier batches stay shallow and harder ones leverage more layers.
+    *   Pass schedule-specific knobs via `--recurrent_depth_schedule_opts`. The value accepts either JSON or comma-separated `key=value` pairs, e.g.
+        ```bash
+        --recurrent_depth_schedule=cyclical --recurrent_depth_schedule_opts='{"cycle_length":8}' \
+        --recurrent_depth_schedule_interval=500
+        ```
+        or `--recurrent_depth_schedule_opts=cycle_length=8,steady_intervals=6,burst_intervals=2`.
+    *   Control signal smoothing and normalization with:
+        *   `--recurrent_depth_schedule_feedback_alpha=0.05` (EMA coefficient used by performance/difficulty strategies).
+        *   `--recurrent_depth_schedule_difficulty_min_ratio=0.5` / `--recurrent_depth_schedule_difficulty_max_ratio=1.5` to map the loss-vs-EMA ratio into `[0, 1]`.
+    *   You can still tweak `--recurrent_depth_schedule_interval`, `--recurrent_depth_schedule_min_depth`, and optionally `--recurrent_depth_schedule_resample_prob=0.1` to occasionally fall back to the original log-normal sampler. Any unsupported value (default `random`) preserves the historical behaviour.
 
 ### Hyperparameter Tuning (Experimental)
 

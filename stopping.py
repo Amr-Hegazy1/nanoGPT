@@ -1,9 +1,37 @@
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
+from oracle_teacher import OracleAnnotations
+
+
+def _stop_predictor_forward(model: Any, stop_features: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    predictor = getattr(model, "stop_predictor", None)
+    if predictor is None:
+        raise RuntimeError("A stop predictor is required but not initialized.")
+    predictor_dtype = getattr(predictor, "preferred_dtype", None)
+    if predictor_dtype is None:
+        predictor_dtype = stop_features.dtype
+    stop_features = stop_features.to(predictor_dtype)
+    predictor_output = predictor(stop_features)
+    if hasattr(predictor_output, "stop_logits"):
+        stop_logits = predictor_output.stop_logits
+        difficulty_logits = getattr(predictor_output, "difficulty_logits", None)
+    else:
+        stop_logits = predictor_output.squeeze(-1)
+        difficulty_logits = None
+    return stop_logits, difficulty_logits
+
+
+def _masked_mean(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    mask = mask.to(value.dtype)
+    denom = mask.sum()
+    if denom <= 0:
+        return value.mean()
+    return (value * mask).sum() / denom
 
 @dataclass
 class StoppingContext:
@@ -12,6 +40,7 @@ class StoppingContext:
     num_layers: int
     targets: Optional[torch.Tensor]
     aux_loss: torch.Tensor
+    oracle: Optional[OracleAnnotations] = None
 
 
 @dataclass
@@ -98,6 +127,209 @@ class StickyDropoutStrategy(StoppingStrategy):
         return StoppingResult(x=x, aux_loss=ctx.aux_loss, num_expanded_layers=num_expanded_layers)
 
 
+class OracleGuidedStoppingStrategy(StoppingStrategy):
+    def is_active(self, model: Any, ctx: StoppingContext) -> bool:
+        return bool(getattr(model, "oracle_stopping", False))
+
+    def run(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        if getattr(model, "stopping_tokenwise", False):
+            return self._run_tokenwise(model, ctx)
+        return self._run_sequencewise(model, ctx)
+
+    def _run_sequencewise(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        x = ctx.x
+        shared_block_fn = ctx.shared_block_fn
+        num_layers = ctx.num_layers
+        annotations = ctx.oracle
+        aux_loss = ctx.aux_loss
+
+        B = x.shape[0]
+        device = x.device
+        dtype = x.dtype
+        prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+
+        num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
+        continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
+        stop_masses: List[torch.Tensor] = []
+        stop_loss = torch.zeros((), device=device, dtype=prob_dtype)
+        difficulty_accum = torch.zeros(B, device=device, dtype=prob_dtype)
+        difficulty_steps = 0
+
+        if annotations is not None:
+            if annotations.num_layers < num_layers:
+                raise ValueError("Oracle annotations have fewer layers than requested for oracle stopping.")
+            sequence_targets = annotations.sequence_stop_targets[:, :num_layers]
+            sequence_mask = annotations.valid_mask.any(dim=1).to(prob_dtype)
+        else:
+            sequence_targets = None
+            sequence_mask = torch.ones(B, device=device, dtype=prob_dtype)
+
+        if model.training:
+            model._oracle_step += 1
+
+        for layer_idx in range(num_layers):
+            x_in = x
+            x_transformed = shared_block_fn(x_in)
+
+            pooled = x_in.mean(dim=1)
+            last_token = x_in[:, -1, :]
+            stop_features = torch.cat((last_token, pooled), dim=-1)
+            stop_logits, difficulty_logits = _stop_predictor_forward(model, stop_features)
+
+            if difficulty_logits is not None:
+                difficulty_accum = difficulty_accum + torch.sigmoid(difficulty_logits).to(prob_dtype)
+                difficulty_steps += 1
+
+            if model.oracle_temperature != 1.0:
+                stop_logits = stop_logits / model.oracle_temperature
+            stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+            if not model.training and model.oracle_use_threshold:
+                stop_prob = (stop_prob > model.oracle_threshold).to(prob_dtype)
+            else:
+                stop_prob = stop_prob.clamp(model.oracle_min_prob, 1.0 - model.oracle_min_prob)
+
+            if sequence_targets is not None:
+                stop_target = sequence_targets[:, layer_idx]
+                layer_stop_loss = F.binary_cross_entropy_with_logits(
+                    stop_logits.to(prob_dtype), stop_target, reduction='none'
+                )
+                stop_loss = stop_loss + _masked_mean(layer_stop_loss, sequence_mask)
+
+            stop_mass = continue_probs * stop_prob
+            stop_masses.append(stop_mass)
+
+            continue_gate = 1.0 - stop_prob
+            stop_prob_mix = stop_prob.to(dtype)
+            continue_gate_mix = continue_gate.to(dtype)
+            x = stop_prob_mix.view(B, 1, 1) * x_in + continue_gate_mix.view(B, 1, 1) * x_transformed
+
+            num_expanded_layers_tensor = num_expanded_layers_tensor + (continue_probs * continue_gate)
+            continue_probs = continue_probs * continue_gate
+
+        residual_mass = continue_probs
+        stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+        stop_distribution = stop_distribution / (stop_distribution.sum(dim=1, keepdim=True) + 1e-8)
+
+        depth_mean = num_expanded_layers_tensor.mean()
+        stop_loss = stop_loss / max(num_layers, 1)
+
+        if annotations is not None and difficulty_steps > 0:
+            difficulty_pred = difficulty_accum / difficulty_steps
+            difficulty_target = annotations.sequence_difficulty
+            difficulty_loss_tensor = F.mse_loss(difficulty_pred, difficulty_target, reduction='none')
+            difficulty_loss = _masked_mean(difficulty_loss_tensor, sequence_mask)
+        else:
+            difficulty_loss = torch.zeros((), device=device, dtype=prob_dtype)
+
+        total_aux = aux_loss + model.oracle_stop_weight * stop_loss.to(aux_loss.dtype) + \
+            model.oracle_difficulty_weight * difficulty_loss.to(aux_loss.dtype)
+
+        model.oracle_metrics = {
+            "mean_depth": depth_mean.detach().item(),
+            "stop_loss": stop_loss.detach().item(),
+            "difficulty_loss": difficulty_loss.detach().item(),
+        }
+
+        num_expanded_layers = depth_mean.item()
+        return StoppingResult(x=x, aux_loss=total_aux, num_expanded_layers=num_expanded_layers)
+
+    def _run_tokenwise(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        x = ctx.x
+        shared_block_fn = ctx.shared_block_fn
+        num_layers = ctx.num_layers
+        annotations = ctx.oracle
+        aux_loss = ctx.aux_loss
+
+        B, T = x.shape[:2]
+        device = x.device
+        dtype = x.dtype
+        prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+
+        num_expanded_tokens = torch.zeros(B, T, device=device, dtype=prob_dtype)
+        continue_probs = torch.ones(B, T, device=device, dtype=prob_dtype)
+        stop_masses: List[torch.Tensor] = []
+        stop_loss = torch.zeros((), device=device, dtype=prob_dtype)
+        difficulty_accum = torch.zeros(B, T, device=device, dtype=prob_dtype)
+        difficulty_steps = 0
+
+        if annotations is not None:
+            if annotations.num_layers < num_layers:
+                raise ValueError("Oracle annotations have fewer layers than requested for oracle stopping.")
+            token_targets = annotations.token_stop_targets[:, :, :num_layers]
+            token_mask = annotations.valid_mask.to(prob_dtype)
+        else:
+            token_targets = None
+            token_mask = torch.ones(B, T, device=device, dtype=prob_dtype)
+
+        if model.training:
+            model._oracle_step += 1
+
+        for layer_idx in range(num_layers):
+            x_in = x
+            x_transformed = shared_block_fn(x_in)
+
+            pooled = x_in.mean(dim=1, keepdim=True).expand(-1, T, -1)
+            stop_features = torch.cat((x_in, pooled), dim=-1)
+            stop_logits, difficulty_logits = _stop_predictor_forward(model, stop_features)
+
+            if difficulty_logits is not None:
+                difficulty_accum = difficulty_accum + torch.sigmoid(difficulty_logits).to(prob_dtype)
+                difficulty_steps += 1
+
+            if model.oracle_temperature != 1.0:
+                stop_logits = stop_logits / model.oracle_temperature
+            stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+            if not model.training and model.oracle_use_threshold:
+                stop_prob = (stop_prob > model.oracle_threshold).to(prob_dtype)
+            else:
+                stop_prob = stop_prob.clamp(model.oracle_min_prob, 1.0 - model.oracle_min_prob)
+
+            if token_targets is not None:
+                stop_target = token_targets[:, :, layer_idx]
+                layer_stop_loss = F.binary_cross_entropy_with_logits(
+                    stop_logits.to(prob_dtype), stop_target, reduction='none'
+                )
+                stop_loss = stop_loss + _masked_mean(layer_stop_loss, token_mask)
+
+            stop_mass = continue_probs * stop_prob
+            stop_masses.append(stop_mass)
+
+            continue_gate = 1.0 - stop_prob
+            stop_prob_mix = stop_prob.to(dtype).unsqueeze(-1)
+            continue_gate_mix = continue_gate.to(dtype).unsqueeze(-1)
+            x = stop_prob_mix * x_in + continue_gate_mix * x_transformed
+
+            num_expanded_tokens = num_expanded_tokens + (continue_probs * continue_gate)
+            continue_probs = continue_probs * continue_gate
+
+        residual_mass = continue_probs
+        stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+        stop_distribution = stop_distribution / (stop_distribution.sum(dim=1, keepdim=True) + 1e-8)
+
+        depth_mean = num_expanded_tokens.mean()
+        stop_loss = stop_loss / max(num_layers, 1)
+
+        if annotations is not None and difficulty_steps > 0:
+            difficulty_pred = difficulty_accum / difficulty_steps
+            difficulty_target = annotations.token_difficulty
+            difficulty_loss_tensor = F.mse_loss(difficulty_pred, difficulty_target, reduction='none')
+            difficulty_loss = _masked_mean(difficulty_loss_tensor, token_mask)
+        else:
+            difficulty_loss = torch.zeros((), device=device, dtype=prob_dtype)
+
+        total_aux = aux_loss + model.oracle_stop_weight * stop_loss.to(aux_loss.dtype) + \
+            model.oracle_difficulty_weight * difficulty_loss.to(aux_loss.dtype)
+
+        model.oracle_metrics = {
+            "mean_depth": depth_mean.detach().item(),
+            "stop_loss": stop_loss.detach().item(),
+            "difficulty_loss": difficulty_loss.detach().item(),
+        }
+
+        num_expanded_layers = depth_mean.item()
+        return StoppingResult(x=x, aux_loss=total_aux, num_expanded_layers=num_expanded_layers)
+
+
 class LearnedStoppingStrategy(StoppingStrategy):
     """
     Learns a probabilistic early-exit controller ("stop head") that makes a soft, differentiable
@@ -156,14 +388,7 @@ class LearnedStoppingStrategy(StoppingStrategy):
             pooled = x_in.mean(dim=1)
             last_token = x_in[:, -1, :]
             stop_features = torch.cat((last_token, pooled), dim=-1)
-            predictor_dtype = (
-                model.stop_predictor[0].weight.dtype
-                if isinstance(model.stop_predictor, nn.Sequential)
-                else stop_features.dtype
-            )
-            # Cast to predictor dtype (e.g., fp32) for numerical stability on mixed precision.
-            stop_features = stop_features.to(predictor_dtype)
-            stop_logits = model.stop_predictor(stop_features).squeeze(-1)
+            stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.learned_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.learned_stopping_temperature
             stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
@@ -281,14 +506,7 @@ class LearnedStoppingStrategy(StoppingStrategy):
             # Tokenwise variant gives each position its own features plus the pooled summary.
             pooled = x_in.mean(dim=1, keepdim=True).expand(-1, T, -1)
             stop_features = torch.cat((x_in, pooled), dim=-1)
-            predictor_dtype = (
-                model.stop_predictor[0].weight.dtype
-                if isinstance(model.stop_predictor, nn.Sequential)
-                else stop_features.dtype
-            )
-            # Cast to predictor dtype (e.g., fp32) for numerical stability on mixed precision.
-            stop_features = stop_features.to(predictor_dtype)
-            stop_logits = model.stop_predictor(stop_features).squeeze(-1)
+            stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.learned_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.learned_stopping_temperature
             stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
@@ -417,14 +635,7 @@ class AttentiveStoppingStrategy(StoppingStrategy):
             pooled = x.mean(dim=1)
             last_token = x[:, -1, :]
             stop_features = torch.cat((last_token, pooled), dim=-1)
-            predictor_dtype = (
-                model.stop_predictor[0].weight.dtype
-                if isinstance(model.stop_predictor, nn.Sequential)
-                else stop_features.dtype
-            )
-            # Cast to predictor dtype (e.g., fp32) for numerical stability on mixed precision.
-            stop_features = stop_features.to(predictor_dtype)
-            stop_logits = model.stop_predictor(stop_features).squeeze(-1)
+            stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.attentive_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.attentive_stopping_temperature
             stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
@@ -533,14 +744,7 @@ class AttentiveStoppingStrategy(StoppingStrategy):
         for _ in range(num_layers):
             pooled = x.mean(dim=1, keepdim=True).expand(-1, T, -1)
             stop_features = torch.cat((x, pooled), dim=-1)
-            predictor_dtype = (
-                model.stop_predictor[0].weight.dtype
-                if isinstance(model.stop_predictor, nn.Sequential)
-                else stop_features.dtype
-            )
-            # Cast to predictor dtype (e.g., fp32) for numerical stability on mixed precision.
-            stop_features = stop_features.to(predictor_dtype)
-            stop_logits = model.stop_predictor(stop_features).squeeze(-1)
+            stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.attentive_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.attentive_stopping_temperature
             stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
@@ -617,6 +821,245 @@ class AttentiveStoppingStrategy(StoppingStrategy):
         # Note: returned for logging/analysis in the training loop; does not affect loss directly.
         num_expanded_layers = depth_mean.item()
 
+        return StoppingResult(x=x, aux_loss=aux_loss, num_expanded_layers=num_expanded_layers)
+
+
+class HardAttentiveStoppingStrategy(StoppingStrategy):
+    """
+    Hard variant of attentive stopping. The stop head still produces a probability for
+    controller/entropy losses, but the gate fed into each block is binarized so halted
+    sequences/tokens contribute exactly zero attention mass (via -inf masking) and zero
+    residual updates. Gradients flow through a straight-through estimator.
+    """
+    def is_active(self, model: Any, ctx: StoppingContext) -> bool:
+        return bool(getattr(model, "hard_attentive_stopping", False))
+
+    def run(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        if getattr(model, "stopping_tokenwise", False):
+            return self._run_tokenwise(model, ctx)
+        return self._run_sequencewise(model, ctx)
+
+    def _common_metrics(
+        self,
+        model: Any,
+        depth_mean: torch.Tensor,
+        stop_distribution: torch.Tensor,
+        targets: Optional[torch.Tensor],
+        aux_loss: torch.Tensor,
+        controller_active: bool,
+        depth_target_tensor: torch.Tensor,
+        depth_delta: torch.Tensor,
+        entropy: torch.Tensor,
+    ) -> torch.Tensor:
+        controller_loss = depth_delta ** 2
+        if controller_active and model.attentive_stopping_controller_weight > 0:
+            controller_loss = controller_loss * model.attentive_stopping_controller_weight
+        else:
+            controller_loss = controller_loss * 0.0
+
+        if controller_active and model.attentive_stopping_entropy_weight > 0:
+            entropy_term = -model.attentive_stopping_entropy_weight * entropy
+        else:
+            entropy_term = entropy * 0.0
+
+        if model.training and targets is not None:
+            aux_term = (controller_loss + entropy_term).to(aux_loss.dtype)
+            model.hard_attentive_stopping_metrics = {
+                "mean_depth": depth_mean.detach().item(),
+                "controller_loss": controller_loss.detach().item(),
+                "entropy": entropy.detach().item(),
+                "target_depth": depth_target_tensor.detach().item(),
+                "depth_delta": depth_delta.detach().item(),
+                "controller_active": 1.0 if controller_active else 0.0,
+            }
+        else:
+            aux_term = torch.tensor(0.0, device=aux_loss.device, dtype=aux_loss.dtype)
+            model.hard_attentive_stopping_metrics = None
+
+        return aux_term
+
+    def _run_sequencewise(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        x = ctx.x
+        shared_block_fn = ctx.shared_block_fn
+        num_layers = ctx.num_layers
+        targets = ctx.targets
+        aux_loss = ctx.aux_loss
+
+        B = x.shape[0]
+        device = x.device
+        dtype = x.dtype
+        prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+
+        num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
+        continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
+        stop_masses: List[torch.Tensor] = []
+        active_mask = torch.ones(B, device=device, dtype=torch.bool)
+
+        if model.training:
+            model._hard_attentive_stopping_step += 1
+
+        for _ in range(num_layers):
+            if not active_mask.any():
+                break
+
+            pooled = x.mean(dim=1)
+            last_token = x[:, -1, :]
+            stop_features = torch.cat((last_token, pooled), dim=-1)
+            stop_logits, _ = _stop_predictor_forward(model, stop_features)
+            if model.attentive_stopping_temperature != 1.0:
+                stop_logits = stop_logits / model.attentive_stopping_temperature
+            stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+
+            if model.training and model._hard_attentive_stopping_step <= model.attentive_stopping_warmup_steps:
+                stop_prob = torch.zeros_like(stop_prob)
+
+            stop_prob = stop_prob.clamp(model.attentive_stopping_min_prob, 1.0 - model.attentive_stopping_min_prob)
+
+            effective_stop = torch.where(active_mask, stop_prob, torch.ones_like(stop_prob))
+            effective_continue = torch.where(active_mask, 1.0 - stop_prob, torch.zeros_like(stop_prob))
+
+            stop_mass = continue_probs * effective_stop
+            stop_masses.append(stop_mass)
+            num_expanded_layers_tensor = num_expanded_layers_tensor + (continue_probs * effective_continue)
+            continue_probs = continue_probs * (1.0 - effective_stop)
+
+            hard_stop = (stop_prob > model.hard_attentive_stopping_threshold) & active_mask
+            hard_continue = active_mask & (~hard_stop)
+
+            gate_soft = effective_continue.to(dtype)
+            gate_hard = hard_continue.to(dtype)
+            gate = gate_hard + (gate_soft - gate_soft.detach())
+            x = shared_block_fn(x, gate=gate.view(B, 1, 1))
+
+            active_mask = hard_continue
+
+        residual_mass = continue_probs
+        stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+        stop_distribution = stop_distribution / (stop_distribution.sum(dim=1, keepdim=True) + 1e-8)
+
+        depth_mean = num_expanded_layers_tensor.mean()
+        target_depth = model.attentive_stopping_target_depth
+        if target_depth is None:
+            if model.config.recurrent_shared_weights:
+                reference = float(num_layers)
+            else:
+                reference = float(model.config.n_layer)
+            target_depth = 0.5 * (reference + 1.0)
+
+        depth_target_tensor = depth_mean.new_tensor(target_depth)
+        depth_delta = depth_mean - depth_target_tensor
+        controller_active = not (model.training and model._hard_attentive_stopping_step <= model.attentive_stopping_warmup_steps)
+
+        entropy = -(stop_distribution * torch.log(stop_distribution + 1e-8)).sum(dim=1).mean()
+        aux_term = self._common_metrics(
+            model,
+            depth_mean,
+            stop_distribution,
+            targets,
+            aux_loss,
+            controller_active,
+            depth_target_tensor,
+            depth_delta,
+            entropy,
+        )
+
+        if targets is not None and model.training:
+            aux_loss = aux_term
+        else:
+            aux_loss = torch.tensor(0.0, device=device, dtype=dtype)
+
+        num_expanded_layers = depth_mean.item()
+        return StoppingResult(x=x, aux_loss=aux_loss, num_expanded_layers=num_expanded_layers)
+
+    def _run_tokenwise(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        x = ctx.x
+        shared_block_fn = ctx.shared_block_fn
+        num_layers = ctx.num_layers
+        targets = ctx.targets
+        aux_loss = ctx.aux_loss
+
+        B, T = x.shape[:2]
+        device = x.device
+        dtype = x.dtype
+        prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+
+        num_expanded_tokens = torch.zeros(B, T, device=device, dtype=prob_dtype)
+        continue_probs = torch.ones(B, T, device=device, dtype=prob_dtype)
+        stop_masses: List[torch.Tensor] = []
+        active_mask = torch.ones(B, T, device=device, dtype=torch.bool)
+
+        if model.training:
+            model._hard_attentive_stopping_step += 1
+
+        for _ in range(num_layers):
+            if not active_mask.any():
+                break
+
+            pooled = x.mean(dim=1, keepdim=True).expand(-1, T, -1)
+            stop_features = torch.cat((x, pooled), dim=-1)
+            stop_logits, _ = _stop_predictor_forward(model, stop_features)
+            if model.attentive_stopping_temperature != 1.0:
+                stop_logits = stop_logits / model.attentive_stopping_temperature
+            stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+
+            if model.training and model._hard_attentive_stopping_step <= model.attentive_stopping_warmup_steps:
+                stop_prob = torch.zeros_like(stop_prob)
+
+            stop_prob = stop_prob.clamp(model.attentive_stopping_min_prob, 1.0 - model.attentive_stopping_min_prob)
+
+            effective_stop = torch.where(active_mask, stop_prob, torch.ones_like(stop_prob))
+            effective_continue = torch.where(active_mask, 1.0 - stop_prob, torch.zeros_like(stop_prob))
+
+            stop_mass = continue_probs * effective_stop
+            stop_masses.append(stop_mass)
+            num_expanded_tokens = num_expanded_tokens + (continue_probs * effective_continue)
+            continue_probs = continue_probs * (1.0 - effective_stop)
+
+            hard_stop = (stop_prob > model.hard_attentive_stopping_threshold) & active_mask
+            hard_continue = active_mask & (~hard_stop)
+
+            gate_soft = effective_continue.to(dtype)
+            gate_hard = hard_continue.to(dtype)
+            gate = gate_hard + (gate_soft - gate_soft.detach())
+            x = shared_block_fn(x, gate=gate.unsqueeze(-1))
+
+            active_mask = hard_continue
+
+        residual_mass = continue_probs
+        stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+        stop_distribution = stop_distribution / (stop_distribution.sum(dim=1, keepdim=True) + 1e-8)
+
+        depth_mean = num_expanded_tokens.mean()
+        target_depth = model.attentive_stopping_target_depth
+        if target_depth is None:
+            if model.config.recurrent_shared_weights:
+                reference = float(num_layers)
+            else:
+                reference = float(model.config.n_layer)
+            target_depth = 0.5 * (reference + 1.0)
+
+        depth_target_tensor = depth_mean.new_tensor(target_depth)
+        depth_delta = depth_mean - depth_target_tensor
+        controller_active = not (model.training and model._hard_attentive_stopping_step <= model.attentive_stopping_warmup_steps)
+        entropy = -(stop_distribution * torch.log(stop_distribution + 1e-8)).sum(dim=1).mean()
+        aux_term = self._common_metrics(
+            model,
+            depth_mean,
+            stop_distribution,
+            targets,
+            aux_loss,
+            controller_active,
+            depth_target_tensor,
+            depth_delta,
+            entropy,
+        )
+
+        if targets is not None and model.training:
+            aux_loss = aux_term
+        else:
+            aux_loss = torch.tensor(0.0, device=device, dtype=dtype)
+
+        num_expanded_layers = depth_mean.item()
         return StoppingResult(x=x, aux_loss=aux_loss, num_expanded_layers=num_expanded_layers)
 
 

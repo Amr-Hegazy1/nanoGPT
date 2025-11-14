@@ -9,6 +9,7 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 
 import math
 import inspect
+import copy
 from dataclasses import dataclass
 from typing import Optional
 
@@ -16,10 +17,13 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from oracle_teacher import OracleAnnotations, OracleTeacher
 from stopping import (
     AttentiveStoppingStrategy,
     DefaultStoppingStrategy,
+    HardAttentiveStoppingStrategy,
     LearnedStoppingStrategy,
+    OracleGuidedStoppingStrategy,
     StickyDropoutStrategy,
     StoppingContext,
     StoppingController,
@@ -56,12 +60,71 @@ def gate_act_fn_clamp(x: torch.Tensor) -> torch.Tensor:
 
 
 def apply_score_mod(mask: torch.Tensor | None, gate: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    score_mod = torch.log(gate.clamp(eps, 1)).squeeze(-1)  # b q_idx
+    """
+    Turns a gate in (0, 1] into an additive attention bias. We clamp to `eps` so
+    zero gates stay finite, avoiding NaNs inside the softmax while still letting
+    downstream residual gating zero the activations.
+    """
+    squeezed_gate = gate.squeeze(-1).to(torch.float32)
+    safe_gate = squeezed_gate.clamp(eps, 1.0)
+    score_mod = torch.log(safe_gate)  # b q_idx
     if mask is None:
         return score_mod[:, :, None].unsqueeze(1)  # b h q_idx kv_idx
     mask = mask[None, :, :] + score_mod[:, :, None]  # b q_idx kv_idx
     mask = mask.unsqueeze(1)  # b h q_idx kv_idx
     return mask
+
+
+@dataclass
+class StopHeadOutput:
+    stop_logits: torch.Tensor
+    difficulty_logits: Optional[torch.Tensor] = None
+
+
+class StopHead(nn.Module):
+    """
+    Shared head used by all stopping strategies. Optionally emits a second logit
+    for token-difficulty supervision when oracle stopping is active.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        predict_difficulty: bool = False,
+        zero_init: bool = False,
+    ) -> None:
+        super().__init__()
+        self.predict_difficulty = predict_difficulty
+        self.trunk = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.stop_out = nn.Linear(hidden_dim, 1)
+        if predict_difficulty:
+            self.difficulty_out = nn.Linear(hidden_dim, 1)
+        else:
+            self.difficulty_out = None
+
+        if zero_init:
+            nn.init.zeros_(self.stop_out.weight)
+            nn.init.zeros_(self.stop_out.bias)
+        if self.difficulty_out is not None:
+            nn.init.zeros_(self.difficulty_out.weight)
+            nn.init.zeros_(self.difficulty_out.bias)
+
+    @property
+    def preferred_dtype(self) -> torch.dtype:
+        return self.stop_out.weight.dtype
+
+    def forward(self, features: torch.Tensor) -> StopHeadOutput:
+        hidden = self.trunk(features)
+        stop_logits = self.stop_out(hidden).squeeze(-1)
+        difficulty_logits = (
+            self.difficulty_out(hidden).squeeze(-1) if self.difficulty_out is not None else None
+        )
+        return StopHeadOutput(stop_logits=stop_logits, difficulty_logits=difficulty_logits)
 
 class CausalSelfAttention(nn.Module):
 
@@ -80,14 +143,17 @@ class CausalSelfAttention(nn.Module):
         self.dropout = config.dropout
         self.block_size = config.block_size
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self._disable_flash_with_gate = bool(getattr(config, 'attentive_stopping', False))
+        attentive = bool(getattr(config, 'attentive_stopping', False))
+        hard_attentive = bool(getattr(config, 'hard_attentive_stopping', False))
+        # hard attentive reuses the same gating path, so force math attention in both modes
+        self._disable_flash_with_gate = attentive or hard_attentive
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
         elif self._disable_flash_with_gate:
-            print("WARNING: attentive stopping disables Flash Attention; using math attention instead.")
+            print("WARNING: attentive/hard attentive stopping disables Flash Attention; using math attention instead.")
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
@@ -129,6 +195,9 @@ class CausalSelfAttention(nn.Module):
                 gate_bias = apply_score_mod(None, gate).to(att.dtype)
                 att = att + gate_bias
             att = F.softmax(att, dim=-1)
+            if gate is not None:
+                # Guard against any pathological rows that might still introduce NaNs numerically.
+                att = torch.nan_to_num(att, nan=0.0)
             att = self.attn_dropout(att)
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
@@ -307,6 +376,16 @@ class GPTConfig:
     learned_stopping_min_prob: float = 1e-4
     learned_stopping_use_threshold: bool = False
     learned_stopping_threshold: float = 0.5
+    oracle_stopping: bool = False
+    oracle_bootstrap_checkpoint: Optional[str] = None
+    oracle_update_interval: int = 1000
+    oracle_max_depth: Optional[int] = None
+    oracle_stop_weight: float = 1.0
+    oracle_difficulty_weight: float = 1.0
+    oracle_temperature: float = 1.0
+    oracle_min_prob: float = 1e-4
+    oracle_use_threshold: bool = False
+    oracle_threshold: float = 0.5
     # attentive stopping
     attentive_stopping: bool = False
     attentive_stopping_warmup_steps: int = 0
@@ -317,6 +396,8 @@ class GPTConfig:
     attentive_stopping_min_prob: float = 1e-4
     attentive_stopping_use_threshold: bool = False
     attentive_stopping_threshold: float = 0.5
+    hard_attentive_stopping: bool = False
+    hard_attentive_stopping_threshold: float = 0.5
     sandwich_norm: bool = False
     stopping_tokenwise: bool = False
     fixed_edge_blocks: bool = False
@@ -328,6 +409,7 @@ class GPTConfig:
     recurrent_noise_concat_dim: Optional[int] = None
     recurrent_extra_layernorm: bool = False
     recurrent_prelude_injection: bool = False
+    recurrent_prelude_injection_mode: str = 'add'
     attentive_stopping: bool = False
     attentive_stopping_warmup_steps: int = 0
     attentive_stopping_controller_weight: float = 0.0
@@ -358,20 +440,17 @@ class GPT(nn.Module):
         self.learned_stopping_min_prob = config.learned_stopping_min_prob
         self.learned_stopping_use_threshold = config.learned_stopping_use_threshold
         self.learned_stopping_threshold = config.learned_stopping_threshold
-        if self.learned_stopping:
-            feature_dim = config.n_embd * 2
-            self.stop_predictor = nn.Sequential(
-                nn.LayerNorm(feature_dim),
-                nn.Linear(feature_dim, config.n_embd),
-                nn.GELU(),
-                nn.Linear(config.n_embd, 1),
-            )
-            self.stopping_metrics = {}
-            self._stopping_step = 0
-        else:
-            self.stop_predictor = None
-            self.stopping_metrics = None
-            self._stopping_step = 0
+
+        self.oracle_stopping = bool(getattr(config, 'oracle_stopping', False))
+        self.oracle_bootstrap_checkpoint = getattr(config, 'oracle_bootstrap_checkpoint', None) or None
+        self.oracle_update_interval = int(getattr(config, 'oracle_update_interval', 0) or 0)
+        self.oracle_max_depth = getattr(config, 'oracle_max_depth', None)
+        self.oracle_stop_weight = getattr(config, 'oracle_stop_weight', 1.0)
+        self.oracle_difficulty_weight = getattr(config, 'oracle_difficulty_weight', 1.0)
+        self.oracle_temperature = getattr(config, 'oracle_temperature', 1.0)
+        self.oracle_min_prob = getattr(config, 'oracle_min_prob', 1e-4)
+        self.oracle_use_threshold = getattr(config, 'oracle_use_threshold', False)
+        self.oracle_threshold = getattr(config, 'oracle_threshold', 0.5)
 
         self.attentive_stopping = config.attentive_stopping
         self.attentive_stopping_warmup_steps = config.attentive_stopping_warmup_steps
@@ -382,26 +461,31 @@ class GPT(nn.Module):
         self.attentive_stopping_min_prob = config.attentive_stopping_min_prob
         self.attentive_stopping_use_threshold = config.attentive_stopping_use_threshold
         self.attentive_stopping_threshold = config.attentive_stopping_threshold
-        if self.attentive_stopping:
+        self.hard_attentive_stopping = getattr(config, 'hard_attentive_stopping', False)
+        self.hard_attentive_stopping_threshold = getattr(config, 'hard_attentive_stopping_threshold', 0.5)
+        self.oracle_teacher: Optional[OracleTeacher] = None
+        self.oracle_metrics = None
+        self._oracle_last_update_step = -1
+        needs_stop_head = self.learned_stopping or self.attentive_stopping or self.oracle_stopping
+        if needs_stop_head:
             feature_dim = config.n_embd * 2
-            self.stop_predictor = nn.Sequential(
-                nn.LayerNorm(feature_dim),
-                nn.Linear(feature_dim, config.n_embd),
-                nn.GELU(),
-                nn.Linear(config.n_embd, 1),
+            zero_init = self.attentive_stopping
+            self.stop_predictor = StopHead(
+                feature_dim,
+                config.n_embd,
+                predict_difficulty=self.oracle_stopping,
+                zero_init=zero_init,
             )
-            final_layer = self.stop_predictor[-1]
-            # Initialize final layer to zeros for a stable start (near-zero logits). Combine with
-            # warmup if you want to begin with an effectively open gate during early training.
-            nn.init.zeros_(final_layer.weight)
-            nn.init.zeros_(final_layer.bias)
-            self.attentive_stopping_metrics = {}
-            self._attentive_stopping_step = 0
         else:
-            if not self.learned_stopping:
-                self.stop_predictor = None
-            self.attentive_stopping_metrics = None
-            self._attentive_stopping_step = 0
+            self.stop_predictor = None
+
+        self.stopping_metrics = {} if self.learned_stopping else None
+        self._stopping_step = 0
+        self.attentive_stopping_metrics = {} if self.attentive_stopping else None
+        self._attentive_stopping_step = 0
+        self.hard_attentive_stopping_metrics = {} if self.hard_attentive_stopping else None
+        self._hard_attentive_stopping_step = 0
+        self._oracle_step = 0
 
         self.fixed_edge_blocks = bool(config.share_parameters_across_layers and config.fixed_edge_blocks)
         if config.fixed_edge_blocks and not config.share_parameters_across_layers:
@@ -413,6 +497,7 @@ class GPT(nn.Module):
             raise ValueError(f"Unsupported recurrent_noise_mode: {self.recurrent_noise_mode}")
         self.recurrent_noise_std = config.recurrent_noise_std
         self.recurrent_noise_concat_dim = None
+        self.recurrent_noise_proj = None
         if self.recurrent_noise_mode == 'concat':
             concat_dim = config.recurrent_noise_concat_dim or config.n_embd
             if concat_dim <= 0:
@@ -421,9 +506,15 @@ class GPT(nn.Module):
             self.recurrent_noise_proj = nn.Linear(config.n_embd + concat_dim, config.n_embd, bias=config.bias)
         else:
             self.recurrent_noise_concat_dim = config.recurrent_noise_concat_dim
-            self.recurrent_noise_proj = None
         self.recurrent_extra_layernorm = config.recurrent_extra_layernorm
         self.recurrent_prelude_injection = config.recurrent_prelude_injection
+        self.recurrent_prelude_injection_mode = getattr(config, 'recurrent_prelude_injection_mode', 'add')
+        if self.recurrent_prelude_injection_mode not in ('add', 'concat'):
+            raise ValueError(f"Unsupported recurrent_prelude_injection_mode: {self.recurrent_prelude_injection_mode}")
+        if self.recurrent_prelude_injection_mode == 'concat':
+            self.recurrent_prelude_proj = nn.Linear(config.n_embd * 2, config.n_embd, bias=config.bias)
+        else:
+            self.recurrent_prelude_proj = None
         self.attentive_stopping = config.attentive_stopping
         self.attentive_stopping_warmup_steps = config.attentive_stopping_warmup_steps
         self.attentive_stopping_controller_weight = config.attentive_stopping_controller_weight
@@ -443,7 +534,9 @@ class GPT(nn.Module):
 
         self.stopping_controller = StoppingController([
             StickyDropoutStrategy(),
+            OracleGuidedStoppingStrategy(),
             LearnedStoppingStrategy(),
+            HardAttentiveStoppingStrategy(),
             AttentiveStoppingStrategy(),
             DefaultStoppingStrategy(),
         ])
@@ -522,14 +615,105 @@ class GPT(nn.Module):
             return self.recurrent_noise_proj(x_aug)
         return x
 
+    def _ensure_oracle_teacher(self, device: torch.device, dtype: torch.dtype) -> Optional[OracleTeacher]:
+        if not self.oracle_stopping:
+            return None
+        if self.oracle_teacher is None:
+            teacher_config = copy.deepcopy(self.config)
+            teacher_config.oracle_stopping = False
+            teacher_config.learned_stopping = False
+            teacher_config.attentive_stopping = False
+            teacher_config.oracle_bootstrap_checkpoint = None
+            teacher_config.oracle_update_interval = 0
+            teacher_model = type(self)(teacher_config)
+            teacher_model.to(device=device, dtype=dtype)
+            teacher_model.eval()
+            for param in teacher_model.parameters():
+                param.requires_grad_(False)
+            self.oracle_teacher = OracleTeacher(teacher_model, max_depth=self.oracle_max_depth)
+            if self.oracle_bootstrap_checkpoint:
+                try:
+                    self.oracle_teacher.load_checkpoint(self.oracle_bootstrap_checkpoint)
+                except FileNotFoundError:
+                    print(f"Warning: oracle bootstrap checkpoint {self.oracle_bootstrap_checkpoint} not found; falling back to student weights.")
+                    self._copy_student_to_oracle()
+                self._oracle_last_update_step = 0
+            else:
+                self._copy_student_to_oracle()
+                self._oracle_last_update_step = 0
+        else:
+            teacher_model = self.oracle_teacher.model
+            teacher_model.to(device=device, dtype=dtype)
+        return self.oracle_teacher
+
+    def _copy_student_to_oracle(self):
+        if not self.oracle_teacher:
+            return
+        teacher_model = self.oracle_teacher.model
+        with torch.no_grad():
+            teacher_model.load_state_dict(self.state_dict(), strict=False)
+        teacher_model.eval()
+        for param in teacher_model.parameters():
+            param.requires_grad_(False)
+
+    def maybe_update_oracle(self, step: int):
+        if not self.oracle_stopping:
+            return
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        self._ensure_oracle_teacher(device, dtype)
+        if self.oracle_teacher is None:
+            return
+        interval = max(1, int(self.oracle_update_interval) if self.oracle_update_interval is not None else 1)
+        if self._oracle_last_update_step < 0 or (step - self._oracle_last_update_step) >= interval:
+            self._copy_student_to_oracle()
+            self._oracle_last_update_step = step
+
+    def get_oracle_state(self):
+        if not self.oracle_stopping or self.oracle_teacher is None:
+            return None
+        from collections import OrderedDict
+        state_dict = OrderedDict((k, v.cpu()) for k, v in self.oracle_teacher.state_dict().items())
+        return {
+            "state_dict": state_dict,
+            "last_update_step": self._oracle_last_update_step,
+        }
+
+    def load_oracle_state(self, state: Optional[dict]):
+        if not self.oracle_stopping or state is None:
+            return
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        teacher = self._ensure_oracle_teacher(device, dtype)
+        if teacher is None:
+            return
+        teacher.load_state_dict(state.get("state_dict", {}))
+        self._oracle_last_update_step = state.get("last_update_step", -1)
+
+    def _get_oracle_teacher(self, device: torch.device, dtype: torch.dtype) -> OracleTeacher:
+        teacher = self._ensure_oracle_teacher(device, dtype)
+        if teacher is None:
+            raise RuntimeError("oracle_stopping is disabled but oracle teacher requested.")
+        return teacher
+
     def _forward_shared_block(self, block, x, gate=None, prelude_output=None):
         x_in = self._apply_recurrent_noise(x)
         if prelude_output is not None:
-            x_in = x_in + prelude_output
+            x_in = self._inject_prelude(x_in, prelude_output)
         out = block(x_in, gate=gate)
         if self.recurrent_extra_layernorm:
             out = self.recurrent_extra_ln(out)
         return out
+
+    def _inject_prelude(self, x, prelude_output):
+        if self.recurrent_prelude_injection_mode == 'add':
+            return x + prelude_output
+        if self.recurrent_prelude_injection_mode == 'concat':
+            if self.recurrent_prelude_proj is None:
+                raise RuntimeError("Prelude projection is uninitialized for 'concat' injection mode.")
+            x_aug = torch.cat([x, prelude_output], dim=-1)
+            return self.recurrent_prelude_proj(x_aug)
+        raise ValueError(f"Unsupported recurrent_prelude_injection_mode: {self.recurrent_prelude_injection_mode}")
 
     def forward(self, idx, targets=None, n=None):
         device = idx.device
@@ -566,12 +750,19 @@ class GPT(nn.Module):
             else:
                 num_layers = self.config.n_layer
 
+            oracle_annotations = None
+            if self.oracle_stopping and targets is not None:
+                oracle_annotations = self._get_oracle_teacher(x.device, x.dtype).annotate(
+                    idx, targets, num_layers, self.stopping_tokenwise
+                )
+
             ctx = StoppingContext(
                 x=x,
                 shared_block_fn=shared_block_fn,
                 num_layers=num_layers,
                 targets=targets,
                 aux_loss=aux_loss,
+                oracle=oracle_annotations,
             )
             stopping_result = self.stopping_controller.run(self, ctx)
             x = stopping_result.x
