@@ -96,6 +96,8 @@ attentive_stopping_use_threshold = False
 attentive_stopping_threshold = 0.5
 hard_attentive_stopping = False
 hard_attentive_stopping_threshold = 0.5
+stop_use_cumsum_pooling = False
+stop_disable_pooled_features = False
 oracle_stopping = False
 oracle_bootstrap_checkpoint = ''
 oracle_update_interval = 1000
@@ -442,6 +444,8 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   attentive_stopping_min_prob=attentive_stopping_min_prob,
                   attentive_stopping_use_threshold=attentive_stopping_use_threshold,
                   attentive_stopping_threshold=attentive_stopping_threshold,
+                  stop_use_cumsum_pooling=stop_use_cumsum_pooling,
+                  stop_disable_pooled_features=stop_disable_pooled_features,
                   hard_attentive_stopping=hard_attentive_stopping,
                   hard_attentive_stopping_threshold=hard_attentive_stopping_threshold,
                   stopping_tokenwise=stopping_tokenwise)

@@ -23,6 +23,7 @@ from stopping import (
     DefaultStoppingStrategy,
     HardAttentiveStoppingStrategy,
     LearnedStoppingStrategy,
+    OracleAttentiveStoppingStrategy,
     OracleGuidedStoppingStrategy,
     StickyDropoutStrategy,
     StoppingContext,
@@ -396,6 +397,8 @@ class GPTConfig:
     attentive_stopping_min_prob: float = 1e-4
     attentive_stopping_use_threshold: bool = False
     attentive_stopping_threshold: float = 0.5
+    stop_use_cumsum_pooling: bool = False
+    stop_disable_pooled_features: bool = False
     hard_attentive_stopping: bool = False
     hard_attentive_stopping_threshold: float = 0.5
     sandwich_norm: bool = False
@@ -419,6 +422,7 @@ class GPTConfig:
     attentive_stopping_min_prob: float = 1e-4
     attentive_stopping_use_threshold: bool = False
     attentive_stopping_threshold: float = 0.5
+    stop_use_cumsum_pooling: bool = False
 
 class GPT(nn.Module):
 
@@ -466,9 +470,12 @@ class GPT(nn.Module):
         self.oracle_teacher: Optional[OracleTeacher] = None
         self.oracle_metrics = None
         self._oracle_last_update_step = -1
+        self.stop_use_cumsum_pooling = bool(getattr(config, "stop_use_cumsum_pooling", False))
+        self.stop_disable_pooled_features = bool(getattr(config, "stop_disable_pooled_features", False))
         needs_stop_head = self.learned_stopping or self.attentive_stopping or self.oracle_stopping
         if needs_stop_head:
-            feature_dim = config.n_embd * 2
+            pooled_factor = 0 if self.stop_disable_pooled_features else 1
+            feature_dim = config.n_embd * (1 + pooled_factor)
             zero_init = self.attentive_stopping
             self.stop_predictor = StopHead(
                 feature_dim,
@@ -534,6 +541,7 @@ class GPT(nn.Module):
 
         self.stopping_controller = StoppingController([
             StickyDropoutStrategy(),
+            OracleAttentiveStoppingStrategy(),
             OracleGuidedStoppingStrategy(),
             LearnedStoppingStrategy(),
             HardAttentiveStoppingStrategy(),

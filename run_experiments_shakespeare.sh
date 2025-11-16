@@ -279,4 +279,11 @@ python train.py $BASE_RECURRENT_ARGS --recurrent_depth_schedule=performance --re
 python sample.py --out_dir=$EXP32_DIR > $EXP32_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP32_DIR
 
+# Experiment 33: Recurrent Shared Weights with cumulative stop features
+echo "Running experiment 33: Recurrent Shared Weights with cumulative stop features"
+EXP33_DIR="out-shakespeare-char-recurrent-cumsum-stop"
+python train.py $BASE_RECURRENT_ARGS --stop_use_cumsum_pooling=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-cumsum-stop" --out_dir=$EXP33_DIR
+python sample.py --out_dir=$EXP33_DIR > $EXP33_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP33_DIR
+
 echo "All experiments complete."

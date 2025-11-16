@@ -1,3 +1,11 @@
+"""
+Stopping strategies coordinate the recursive shared block.
+
+Each strategy decides whether to keep looping, mix in new activations, or stop
+early. They all share a small head (`StopHead`) that predicts a stop/continue
+probability from the current hidden state.
+"""
+
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -9,6 +17,7 @@ from oracle_teacher import OracleAnnotations
 
 
 def _stop_predictor_forward(model: Any, stop_features: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """Helper that runs the shared `StopHead` with dtype safety."""
     predictor = getattr(model, "stop_predictor", None)
     if predictor is None:
         raise RuntimeError("A stop predictor is required but not initialized.")
@@ -33,8 +42,37 @@ def _masked_mean(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         return value.mean()
     return (value * mask).sum() / denom
 
+
+def _prefix_cumulative_mean(x: torch.Tensor) -> torch.Tensor:
+    """Running mean over the sequence dimension."""
+    positions = torch.arange(
+        1,
+        x.size(1) + 1,
+        device=x.device,
+        dtype=torch.float32,
+    ).view(1, x.size(1), 1).to(x.dtype)
+    return torch.cumsum(x, dim=1) / positions
+
+
+def _sequence_pooling(model: Any, x: torch.Tensor) -> Optional[torch.Tensor]:
+    if getattr(model, "stop_disable_pooled_features", False):
+        return None
+    if getattr(model, "stop_use_cumsum_pooling", False):
+        return _prefix_cumulative_mean(x)[:, -1, :]
+    return x.mean(dim=1)
+
+
+def _token_pooling(model: Any, x: torch.Tensor) -> Optional[torch.Tensor]:
+    if getattr(model, "stop_disable_pooled_features", False):
+        return None
+    if getattr(model, "stop_use_cumsum_pooling", False):
+        return _prefix_cumulative_mean(x)
+    return x.mean(dim=1, keepdim=True).expand(-1, x.size(1), -1)
+
 @dataclass
 class StoppingContext:
+    """Holds the mutable state shared by all strategies during a forward pass."""
+
     x: torch.Tensor
     shared_block_fn: Callable[..., torch.Tensor]
     num_layers: int
@@ -45,12 +83,16 @@ class StoppingContext:
 
 @dataclass
 class StoppingResult:
+    """Return value that summarizes the updated activations and bookkeeping."""
+
     x: torch.Tensor
     aux_loss: torch.Tensor
     num_expanded_layers: float
 
 
 class StoppingStrategy:
+    """Base class for plug-and-play strategies (sticky dropout, learned, etc.)."""
+
     def is_active(self, model: Any, ctx: StoppingContext) -> bool:
         raise NotImplementedError
 
@@ -59,6 +101,8 @@ class StoppingStrategy:
 
 
 class StickyDropoutStrategy(StoppingStrategy):
+    """Randomly drops sequences/tokens once and never reactivates them."""
+
     def is_active(self, model: Any, ctx: StoppingContext) -> bool:
         return model.sticky_dropout > 0 and model.training
 
@@ -128,6 +172,8 @@ class StickyDropoutStrategy(StoppingStrategy):
 
 
 class OracleGuidedStoppingStrategy(StoppingStrategy):
+    """Uses oracle annotations from a frozen teacher to supervise halting."""
+
     def is_active(self, model: Any, ctx: StoppingContext) -> bool:
         return bool(getattr(model, "oracle_stopping", False))
 
@@ -171,9 +217,9 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
             x_in = x
             x_transformed = shared_block_fn(x_in)
 
-            pooled = x_in.mean(dim=1)
+            pooled = _sequence_pooling(model, x_in)
             last_token = x_in[:, -1, :]
-            stop_features = torch.cat((last_token, pooled), dim=-1)
+            stop_features = last_token if pooled is None else torch.cat((last_token, pooled), dim=-1)
             stop_logits, difficulty_logits = _stop_predictor_forward(model, stop_features)
 
             if difficulty_logits is not None:
@@ -268,8 +314,8 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
             x_in = x
             x_transformed = shared_block_fn(x_in)
 
-            pooled = x_in.mean(dim=1, keepdim=True).expand(-1, T, -1)
-            stop_features = torch.cat((x_in, pooled), dim=-1)
+            pooled = _token_pooling(model, x_in)
+            stop_features = x_in if pooled is None else torch.cat((x_in, pooled), dim=-1)
             stop_logits, difficulty_logits = _stop_predictor_forward(model, stop_features)
 
             if difficulty_logits is not None:
@@ -385,9 +431,9 @@ class LearnedStoppingStrategy(StoppingStrategy):
 
             # Use coarse sequence statistics so the predictor can understand current progress.
             # last_token ~ local signal; pooled ~ global progress summary.
-            pooled = x_in.mean(dim=1)
+            pooled = _sequence_pooling(model, x_in)
             last_token = x_in[:, -1, :]
-            stop_features = torch.cat((last_token, pooled), dim=-1)
+            stop_features = last_token if pooled is None else torch.cat((last_token, pooled), dim=-1)
             stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.learned_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.learned_stopping_temperature
@@ -504,8 +550,8 @@ class LearnedStoppingStrategy(StoppingStrategy):
             x_transformed = shared_block_fn(x_in)
 
             # Tokenwise variant gives each position its own features plus the pooled summary.
-            pooled = x_in.mean(dim=1, keepdim=True).expand(-1, T, -1)
-            stop_features = torch.cat((x_in, pooled), dim=-1)
+            pooled = _token_pooling(model, x_in)
+            stop_features = x_in if pooled is None else torch.cat((x_in, pooled), dim=-1)
             stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.learned_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.learned_stopping_temperature
@@ -632,9 +678,9 @@ class AttentiveStoppingStrategy(StoppingStrategy):
             model._attentive_stopping_step += 1
 
         for _ in range(num_layers):
-            pooled = x.mean(dim=1)
+            pooled = _sequence_pooling(model, x)
             last_token = x[:, -1, :]
-            stop_features = torch.cat((last_token, pooled), dim=-1)
+            stop_features = last_token if pooled is None else torch.cat((last_token, pooled), dim=-1)
             stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.attentive_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.attentive_stopping_temperature
@@ -742,8 +788,8 @@ class AttentiveStoppingStrategy(StoppingStrategy):
             model._attentive_stopping_step += 1
 
         for _ in range(num_layers):
-            pooled = x.mean(dim=1, keepdim=True).expand(-1, T, -1)
-            stop_features = torch.cat((x, pooled), dim=-1)
+            pooled = _token_pooling(model, x)
+            stop_features = x if pooled is None else torch.cat((x, pooled), dim=-1)
             stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.attentive_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.attentive_stopping_temperature
@@ -824,6 +870,204 @@ class AttentiveStoppingStrategy(StoppingStrategy):
         return StoppingResult(x=x, aux_loss=aux_loss, num_expanded_layers=num_expanded_layers)
 
 
+class OracleAttentiveStoppingStrategy(StoppingStrategy):
+    """Combine oracle supervision with attentive gating."""
+
+    def is_active(self, model: Any, ctx: StoppingContext) -> bool:
+        return bool(
+            getattr(model, "oracle_stopping", False)
+            and getattr(model, "attentive_stopping", False)
+            and ctx.oracle is not None
+        )
+
+    def run(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        if getattr(model, "stopping_tokenwise", False):
+            return self._run_tokenwise(model, ctx)
+        return self._run_sequencewise(model, ctx)
+
+    def _run_sequencewise(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        x = ctx.x
+        shared_block_fn = ctx.shared_block_fn
+        num_layers = ctx.num_layers
+        annotations = ctx.oracle
+        aux_loss = ctx.aux_loss
+
+        if annotations is None:
+            return AttentiveStoppingStrategy().run(model, ctx)
+
+        B = x.shape[0]
+        device = x.device
+        dtype = x.dtype
+        prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+
+        sequence_targets = annotations.sequence_stop_targets[:, :num_layers]
+        sequence_mask = annotations.valid_mask.any(dim=1).to(prob_dtype)
+
+        num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
+        continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
+        stop_masses: List[torch.Tensor] = []
+        stop_loss = torch.zeros((), device=device, dtype=prob_dtype)
+        difficulty_accum = torch.zeros(B, device=device, dtype=prob_dtype)
+        difficulty_steps = 0
+
+        if model.training:
+            model._attentive_stopping_step += 1
+
+        for layer_idx in range(num_layers):
+            pooled = _sequence_pooling(model, x)
+            last_token = x[:, -1, :]
+            stop_features = last_token if pooled is None else torch.cat((last_token, pooled), dim=-1)
+            stop_logits, difficulty_logits = _stop_predictor_forward(model, stop_features)
+            if difficulty_logits is not None:
+                difficulty_accum = difficulty_accum + torch.sigmoid(difficulty_logits).to(prob_dtype)
+                difficulty_steps += 1
+
+            if model.attentive_stopping_temperature != 1.0:
+                stop_logits = stop_logits / model.attentive_stopping_temperature
+            stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+
+            if model.training and model._attentive_stopping_step <= model.attentive_stopping_warmup_steps:
+                stop_prob = torch.zeros_like(stop_prob)
+            elif not model.training and model.attentive_stopping_use_threshold:
+                stop_prob = (stop_prob > model.attentive_stopping_threshold).to(prob_dtype)
+
+            if model.training or not model.attentive_stopping_use_threshold:
+                stop_prob = stop_prob.clamp(model.attentive_stopping_min_prob, 1.0 - model.attentive_stopping_min_prob)
+
+            stop_target = sequence_targets[:, layer_idx]
+            layer_stop_loss = F.binary_cross_entropy_with_logits(
+                stop_logits.to(prob_dtype), stop_target, reduction='none'
+            )
+            stop_loss = stop_loss + _masked_mean(layer_stop_loss, sequence_mask)
+
+            stop_mass = continue_probs * stop_prob
+            stop_masses.append(stop_mass)
+
+            continue_gate = 1.0 - stop_prob
+            gate = continue_gate.to(dtype).view(B, 1, 1)
+            x = shared_block_fn(x, gate=gate)
+
+            num_expanded_layers_tensor = num_expanded_layers_tensor + (continue_probs * continue_gate)
+            continue_probs = continue_probs * continue_gate
+
+        residual_mass = continue_probs
+        stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+        stop_distribution = stop_distribution / (stop_distribution.sum(dim=1, keepdim=True) + 1e-8)
+
+        depth_mean = num_expanded_layers_tensor.mean()
+        stop_loss = stop_loss / max(num_layers, 1)
+
+        if difficulty_steps > 0:
+            difficulty_pred = difficulty_accum / difficulty_steps
+            difficulty_target = annotations.sequence_difficulty
+            difficulty_loss_tensor = F.mse_loss(difficulty_pred, difficulty_target, reduction='none')
+            difficulty_loss = _masked_mean(difficulty_loss_tensor, sequence_mask)
+        else:
+            difficulty_loss = torch.zeros((), device=device, dtype=prob_dtype)
+
+        total_aux = aux_loss + model.oracle_stop_weight * stop_loss.to(aux_loss.dtype) + \
+            model.oracle_difficulty_weight * difficulty_loss.to(aux_loss.dtype)
+
+        model.oracle_metrics = {
+            "mean_depth": depth_mean.detach().item(),
+            "stop_loss": stop_loss.detach().item(),
+            "difficulty_loss": difficulty_loss.detach().item(),
+        }
+
+        num_expanded_layers = depth_mean.item()
+        return StoppingResult(x=x, aux_loss=total_aux, num_expanded_layers=num_expanded_layers)
+
+    def _run_tokenwise(self, model: Any, ctx: StoppingContext) -> StoppingResult:
+        x = ctx.x
+        shared_block_fn = ctx.shared_block_fn
+        num_layers = ctx.num_layers
+        annotations = ctx.oracle
+        aux_loss = ctx.aux_loss
+
+        if annotations is None:
+            return AttentiveStoppingStrategy().run(model, ctx)
+
+        B, T = x.shape[:2]
+        device = x.device
+        dtype = x.dtype
+        prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+
+        token_targets = annotations.token_stop_targets[:, :, :num_layers]
+        token_mask = annotations.valid_mask.to(prob_dtype)
+
+        num_expanded_tokens = torch.zeros(B, T, device=device, dtype=prob_dtype)
+        continue_probs = torch.ones(B, T, device=device, dtype=prob_dtype)
+        stop_masses: List[torch.Tensor] = []
+        stop_loss = torch.zeros((), device=device, dtype=prob_dtype)
+        difficulty_accum = torch.zeros(B, T, device=device, dtype=prob_dtype)
+        difficulty_steps = 0
+
+        if model.training:
+            model._attentive_stopping_step += 1
+
+        for layer_idx in range(num_layers):
+            pooled = _token_pooling(model, x)
+            stop_features = x if pooled is None else torch.cat((x, pooled), dim=-1)
+            stop_logits, difficulty_logits = _stop_predictor_forward(model, stop_features)
+            if difficulty_logits is not None:
+                difficulty_accum = difficulty_accum + torch.sigmoid(difficulty_logits).to(prob_dtype)
+                difficulty_steps += 1
+
+            if model.attentive_stopping_temperature != 1.0:
+                stop_logits = stop_logits / model.attentive_stopping_temperature
+            stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
+
+            if model.training and model._attentive_stopping_step <= model.attentive_stopping_warmup_steps:
+                stop_prob = torch.zeros_like(stop_prob)
+            elif not model.training and model.attentive_stopping_use_threshold:
+                stop_prob = (stop_prob > model.attentive_stopping_threshold).to(prob_dtype)
+
+            if model.training or not model.attentive_stopping_use_threshold:
+                stop_prob = stop_prob.clamp(model.attentive_stopping_min_prob, 1.0 - model.attentive_stopping_min_prob)
+
+            stop_target = token_targets[:, :, layer_idx]
+            layer_stop_loss = F.binary_cross_entropy_with_logits(
+                stop_logits.to(prob_dtype), stop_target, reduction='none'
+            )
+            stop_loss = stop_loss + _masked_mean(layer_stop_loss, token_mask)
+
+            stop_mass = continue_probs * stop_prob
+            stop_masses.append(stop_mass)
+
+            continue_gate = 1.0 - stop_prob
+            gate = continue_gate.to(dtype).unsqueeze(-1)
+            x = shared_block_fn(x, gate=gate)
+
+            num_expanded_tokens = num_expanded_tokens + (continue_probs * continue_gate)
+            continue_probs = continue_probs * continue_gate
+
+        residual_mass = continue_probs
+        stop_distribution = torch.stack(stop_masses + [residual_mass], dim=1).to(prob_dtype)
+        stop_distribution = stop_distribution / (stop_distribution.sum(dim=1, keepdim=True) + 1e-8)
+
+        depth_mean = (num_expanded_tokens.sum() / (B * T)).item()
+
+        if difficulty_steps > 0:
+            difficulty_pred = difficulty_accum / difficulty_steps
+            difficulty_target = annotations.token_difficulty
+            difficulty_loss_tensor = F.mse_loss(difficulty_pred, difficulty_target, reduction='none')
+            difficulty_loss = _masked_mean(difficulty_loss_tensor, token_mask)
+        else:
+            difficulty_loss = torch.zeros((), device=device, dtype=prob_dtype)
+
+        stop_loss = stop_loss / max(num_layers, 1)
+        total_aux = aux_loss + model.oracle_stop_weight * stop_loss.to(aux_loss.dtype) + \
+            model.oracle_difficulty_weight * difficulty_loss.to(aux_loss.dtype)
+
+        model.oracle_metrics = {
+            "mean_depth": depth_mean,
+            "stop_loss": stop_loss.detach().item(),
+            "difficulty_loss": difficulty_loss.detach().item(),
+        }
+
+        return StoppingResult(x=x, aux_loss=total_aux, num_expanded_layers=depth_mean)
+
+
 class HardAttentiveStoppingStrategy(StoppingStrategy):
     """
     Hard variant of attentive stopping. The stop head still produces a probability for
@@ -902,9 +1146,9 @@ class HardAttentiveStoppingStrategy(StoppingStrategy):
             if not active_mask.any():
                 break
 
-            pooled = x.mean(dim=1)
+            pooled = _sequence_pooling(model, x)
             last_token = x[:, -1, :]
-            stop_features = torch.cat((last_token, pooled), dim=-1)
+            stop_features = last_token if pooled is None else torch.cat((last_token, pooled), dim=-1)
             stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.attentive_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.attentive_stopping_temperature
@@ -995,8 +1239,8 @@ class HardAttentiveStoppingStrategy(StoppingStrategy):
             if not active_mask.any():
                 break
 
-            pooled = x.mean(dim=1, keepdim=True).expand(-1, T, -1)
-            stop_features = torch.cat((x, pooled), dim=-1)
+            pooled = _token_pooling(model, x)
+            stop_features = x if pooled is None else torch.cat((x, pooled), dim=-1)
             stop_logits, _ = _stop_predictor_forward(model, stop_features)
             if model.attentive_stopping_temperature != 1.0:
                 stop_logits = stop_logits / model.attentive_stopping_temperature

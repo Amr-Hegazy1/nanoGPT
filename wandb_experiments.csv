@@ -1,5 +1,5 @@
 Experiment Name,Final Val Loss,State,Created
-attentive-stopping-hard-tokenwise,8.592820167541504,running,2025-11-14T09:21:39Z
+attentive-stopping-hard-tokenwise,5.658231258392334,running,2025-11-14T09:21:39Z
 attentive-stopping-tokenwise-fixed-edge-noise,N/A,finished,2025-11-12T00:35:38Z
 attentive-stopping-tokenwise-fixed-edge-noise,4.2276506423950195,finished,2025-11-11T18:38:29Z
 attentive-stopping-tokenwise-fixed-edge-noise-prelude-injection-concat,4.192960739135742,finished,2025-11-12T08:14:31Z

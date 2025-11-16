@@ -1,3 +1,12 @@
+"""
+Oracle teacher utilities that supervise the learned stopping controller.
+
+The teacher is just another GPT instance that runs with frozen weights and
+collects the depth at which each token (or sequence) becomes correct.
+Those annotations are later used by the stopping strategies to provide
+targets for depth-aware losses.
+"""
+
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -7,6 +16,8 @@ import torch.nn as nn
 
 @dataclass
 class OracleAnnotations:
+    """Lightweight container with the per-token / per-sequence depth targets."""
+
     token_stop_depths: torch.Tensor  # (B, T)
     token_difficulty: torch.Tensor  # (B, T)
     token_stop_targets: torch.Tensor  # (B, T, L)
@@ -21,6 +32,11 @@ class OracleTeacher:
     """
     Wraps a frozen reference model and produces oracle annotations that describe
     how many recurrent layers it takes to predict each token correctly.
+
+    The teacher itself is just another GPT configured with the same architecture
+    as the student but with gradients disabled. During training, we repeatedly
+    run the shared block up to the requested depth, snapshot the logits, and
+    convert them into targets such as "stop at layer k" for every token.
     """
 
     def __init__(self, model: nn.Module, max_depth: Optional[int] = None) -> None:
@@ -66,6 +82,19 @@ class OracleTeacher:
         requested_depth: int,
         tokenwise: bool,
     ) -> OracleAnnotations:
+        """
+        Run the frozen teacher for `requested_depth` recurrent steps and record
+        when each token or sequence first becomes correct.
+
+        Args:
+            idx: token ids (B, T) fed into the teacher.
+            targets: supervision labels aligned with idx (B, T).
+            requested_depth: how many shared steps to expand.
+            tokenwise: currently unused hook for per-token heuristics.
+
+        Returns:
+            OracleAnnotations with depth targets, difficulty scores, and masks.
+        """
         _ = tokenwise  # reserved for future per-token heuristics
         if targets is None:
             raise ValueError("Oracle annotations require supervision targets.")
@@ -87,6 +116,7 @@ class OracleTeacher:
         fallback_depth = torch.tensor(num_layers - 1, device=device, dtype=torch.long)
         token_stop_depths = torch.full_like(targets, fill_value=-1, dtype=torch.long, device=device)
 
+        # Scan each depth until we find when a token first becomes correct.
         for depth_idx, logits in enumerate(logits_per_layer):
             preds = torch.argmax(logits, dim=-1)
             correct = preds.eq(targets) & valid_mask
@@ -105,6 +135,7 @@ class OracleTeacher:
 
         layer_ids = torch.arange(num_layers, device=device)
         expanded_depths = token_stop_depths.unsqueeze(-1).expand(-1, -1, num_layers)
+        # Build one-hot targets of shape (B, T, num_layers).
         token_stop_targets = torch.where(
             expanded_depths.eq(layer_ids.view(1, 1, -1)),
             torch.ones_like(expanded_depths, dtype=torch.float32),
@@ -122,6 +153,7 @@ class OracleTeacher:
         sequence_difficulty = torch.where(any_valid, sequence_difficulty, torch.zeros_like(sequence_difficulty))
 
         seq_depths_expanded = sequence_stop_depths.unsqueeze(-1).expand(-1, num_layers)
+        # Sequence-level one-hot targets (B, num_layers).
         sequence_stop_targets = torch.where(
             seq_depths_expanded.eq(layer_ids.view(1, -1)),
             torch.ones_like(seq_depths_expanded, dtype=torch.float32),
