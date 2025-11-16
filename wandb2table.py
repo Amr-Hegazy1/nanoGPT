@@ -39,7 +39,7 @@ def get_experiments_table():
             if not history.empty:
                 for metric_name in possible_names:
                     if metric_name in history.columns:
-                        val_loss = history[metric_name].dropna().iloc[-1] if not history[metric_name].dropna().empty else None
+                        val_loss = history[metric_name].dropna().iloc[19] if not history[metric_name].dropna().empty else None
                         break
         
         data.append({

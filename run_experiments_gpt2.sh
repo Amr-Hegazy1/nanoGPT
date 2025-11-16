@@ -218,35 +218,55 @@ echo "Running experiment 17: Recurrent Shared Weights with (1, 2, 1) configurati
 EXP17_DIR="out-gpt2-recurrent-1-2-1"
 $TRAIN_CMD $BASE_RECURRENT_ARGS --n_layers_prelude=1 --n_layer=2 --n_layers_coda=1 --log_correlation=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-1-2-1" --out_dir=$EXP17_DIR --recurrent_depth_peak=16
 python sample.py --out_dir=$EXP17_DIR > $EXP17_DIR/samples.txt
-python plot_recurrent_loss.py --out_dir=$EXP17_DIR
 
-# Experiment 18: Recurrent Shared Weights with (2, 4, 2) configuration
-echo "Running experiment 18: Recurrent Shared Weights with (2, 4, 2) configuration"
-EXP18_DIR="out-gpt2-recurrent-2-4-2"
-$TRAIN_CMD $BASE_RECURRENT_ARGS --n_layers_prelude=2 --n_layer=4 --n_layers_coda=2 --log_correlation=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-2-4-2" --out_dir=$EXP18_DIR
+# Experiment 18: Recurrent Shared Weights with cumulative stop features
+echo "Running experiment 18: Recurrent Shared Weights with cumulative stop features"
+EXP18_DIR="out-gpt2-recurrent-cumsum-stop"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --stop_use_cumsum_pooling=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-cumsum-stop" --out_dir=$EXP18_DIR
 python sample.py --out_dir=$EXP18_DIR > $EXP18_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP18_DIR
 
-# Experiment 19: Recurrent Shared Weights with Learned Stopping, Fixed Edge, and Noise
-echo "Running experiment 19: Recurrent Shared Weights with Learned Stopping, Fixed Edge, and Noise"
-EXP19_DIR="out-gpt2-recurrent-learned-stopping-fixed-edge-noise"
-$TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --hyperparameter_tuning=True --hyperparameter_tuning_trials=12 --hyperparameter_tuning_max_iters=300 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-fixed-edge-noise" --out_dir=$EXP19_DIR
+# Experiment 19: Recurrent Shared Weights with pooled features disabled
+echo "Running experiment 19: Recurrent Shared Weights with pooled stop features disabled"
+EXP19_DIR="out-gpt2-recurrent-stop-token-only"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --stop_disable_pooled_features=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-stop-token-only" --out_dir=$EXP19_DIR
 python sample.py --out_dir=$EXP19_DIR > $EXP19_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP19_DIR
 
-# Experiment 20: Recurrent Shared Weights with Prelude Injection
-echo "Running experiment 20: Recurrent Shared Weights with Prelude Injection"
-EXP20_DIR="out-gpt2-recurrent-prelude-injection"
-$TRAIN_CMD $BASE_RECURRENT_ARGS --recurrent_prelude_injection=True --fixed_edge_blocks=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-prelude-injection" --out_dir=$EXP20_DIR
+# Experiment 20: Recurrent Shared Weights with cumulative stop features + no pooled context
+echo "Running experiment 20: Recurrent Shared Weights with cumulative stop features + no pooled context"
+EXP20_DIR="out-gpt2-recurrent-stop-cumsum-token-only"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --stop_use_cumsum_pooling=True --stop_disable_pooled_features=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-stop-cumsum-token-only" --out_dir=$EXP20_DIR
 python sample.py --out_dir=$EXP20_DIR > $EXP20_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP20_DIR
 
-# Experiment 21: Recurrent Shared Weights with Prelude Injection (Concat)
-echo "Running experiment 21: Recurrent Shared Weights with Prelude Injection (Concat)"
-EXP21_DIR="out-gpt2-recurrent-prelude-injection-concat"
-$TRAIN_CMD $BASE_RECURRENT_ARGS --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-prelude-injection-concat" --out_dir=$EXP21_DIR
+# Experiment 21: Recurrent Shared Weights with (2, 4, 2) configuration
+echo "Running experiment 21: Recurrent Shared Weights with (2, 4, 2) configuration"
+EXP21_DIR="out-gpt2-recurrent-2-4-2"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --n_layers_prelude=2 --n_layer=4 --n_layers_coda=2 --log_correlation=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-2-4-2" --out_dir=$EXP21_DIR
 python sample.py --out_dir=$EXP21_DIR > $EXP21_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP21_DIR
+
+# Experiment 22: Recurrent Shared Weights with Learned Stopping, Fixed Edge, and Noise
+echo "Running experiment 22: Recurrent Shared Weights with Learned Stopping, Fixed Edge, and Noise"
+EXP22_DIR="out-gpt2-recurrent-learned-stopping-fixed-edge-noise"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --learned_stopping=True --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --hyperparameter_tuning=True --hyperparameter_tuning_trials=12 --hyperparameter_tuning_max_iters=300 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-fixed-edge-noise" --out_dir=$EXP22_DIR
+python sample.py --out_dir=$EXP22_DIR > $EXP22_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP22_DIR
+
+# Experiment 23: Recurrent Shared Weights with Prelude Injection
+echo "Running experiment 23: Recurrent Shared Weights with Prelude Injection"
+EXP23_DIR="out-gpt2-recurrent-prelude-injection"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --recurrent_prelude_injection=True --fixed_edge_blocks=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-prelude-injection" --out_dir=$EXP23_DIR
+python sample.py --out_dir=$EXP23_DIR > $EXP23_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP23_DIR
+
+# Experiment 24: Recurrent Shared Weights with Prelude Injection (Concat)
+echo "Running experiment 24: Recurrent Shared Weights with Prelude Injection (Concat)"
+EXP24_DIR="out-gpt2-recurrent-prelude-injection-concat"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-prelude-injection-concat" --out_dir=$EXP24_DIR
+python sample.py --out_dir=$EXP24_DIR > $EXP24_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP24_DIR
 
 # --- RMS Norm Experiments ---
 
@@ -374,6 +394,24 @@ EXP36_DIR="out-gpt2-attentive-stopping-hard-tokenwise"
 $TRAIN_CMD $BASE_ATTENTIVE_ARGS --hard_attentive_stopping=True --hard_attentive_stopping_threshold=0.6 --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="attentive-stopping-hard-tokenwise" --out_dir=$EXP36_DIR
 python sample.py --out_dir=$EXP36_DIR > $EXP36_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP36_DIR
+
+# --- Oracle + Attentive Stopping Experiments ---
+
+BASE_ORACLE_ATTENTIVE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=25 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1 --attentive_stopping=True --attentive_stopping_controller_weight=0.05 --attentive_stopping_entropy_weight=0.01 --attentive_stopping_warmup_steps=200"
+
+# Experiment 37: Oracle + Attentive Stopping (Sequence-Level)
+echo "Running experiment 37: Oracle + Attentive Stopping (Sequence-Level)"
+EXP37_DIR="out-gpt2-oracle-attentive-seq"
+$TRAIN_CMD $BASE_ORACLE_ATTENTIVE_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-attentive-seq" --out_dir=$EXP37_DIR
+python sample.py --out_dir=$EXP37_DIR > $EXP37_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP37_DIR
+
+# Experiment 38: Oracle + Attentive Stopping (Tokenwise)
+echo "Running experiment 38: Oracle + Attentive Stopping (Tokenwise)"
+EXP38_DIR="out-gpt2-oracle-attentive-tokenwise"
+$TRAIN_CMD $BASE_ORACLE_ATTENTIVE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-attentive-tokenwise" --out_dir=$EXP38_DIR
+python sample.py --out_dir=$EXP38_DIR > $EXP38_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP38_DIR
 
 
 echo "All experiments complete."
