@@ -11,7 +11,9 @@ NPROC_PER_NODE=8
 
 # Slurm configuration
 slurm_cluster=gpu-a10
-slurm_partition=a10
+slurm_partition=a10x8-192c768m #a10
+
+MAX_ITERS=20000
 
 # Parse command-line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -64,9 +66,11 @@ fi
 
 # Experiment 1: Baseline
 echo "Running experiment 1: Baseline"
-EXP1_DIR="out-gpt2-baseline"
-bash_cmd="$TRAIN_CMD $CONFIG --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP1_DIR --out_dir=$EXP1_DIR --compile=False --batch_size=4 --log_correlation=True"
-cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 --gpus=${NPROC_PER_NODE} -J ${EXP1_DIR} -o ${EXP1_DIR}/slurm-%j.out --time 10-0 --wckey sparse_scaling_law" -e "${bash_cmd}"
+EXP1_NAME="baseline-steps${MAX_ITERS}"
+EXP1_DIR=logs/$EXP1_NAME
+mkdir -p $EXP1_DIR
+bash_cmd="$TRAIN_CMD $CONFIG --max_iters=$MAX_ITERS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP1_NAME --out_dir=$EXP1_DIR --compile=False --batch_size=2 --gradient_accumulation_steps=80 --log_correlation=True"
+cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP1_NAME} -o ${EXP1_DIR}/slurm-%j.out --time 8:00:00 --wckey sparse_scaling_law" -e "${bash_cmd}"
 # TODO: Add inside a script?
 # echo "Sampling from experiment 1"
 # python sample.py --out_dir=$EXP1_DIR > $EXP1_DIR/samples.txt
@@ -74,7 +78,7 @@ cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 --gpus=${NPROC_PE
 
 
 # Base for this section: Recurrent Shared Weights
-BASE_RECURRENT_ARGS="$CONFIG --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=4 --log_correlation=True --recurrent_depth_peak=32"
+BASE_RECURRENT_ARGS="$CONFIG --max_iters=$MAX_ITERS --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=2 --gradient_accumulation_steps=80 --log_correlation=True --recurrent_depth_peak=32"
 
 
 
@@ -89,9 +93,11 @@ BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_in
 
 # Experiment 2: Oracle Stopping (Tokenwise)
 echo "Running experiment 2: Oracle Stopping (Tokenwise)"
-EXP34_DIR="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat"
-bash_cmd="$TRAIN_CMD $BASE_ORACLE_ARGS --init_from=resume --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat" --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --out_dir=$EXP34_DIR"
-cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 --gpus=${NPROC_PER_NODE} -J ${EXP34_DIR} -o ${EXP34_DIR}/slurm-%j.out --time 10-0 --wckey sparse_scaling_law" -e "${bash_cmd}"
+EXP34_NAME="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat-steps${MAX_ITERS}"
+EXP34_DIR=logs/$EXP34_NAME
+mkdir -p $EXP34_DIR
+bash_cmd="$TRAIN_CMD $BASE_ORACLE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP34_NAME --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --out_dir=$EXP34_DIR"
+cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP34_NAME} -o ${EXP34_DIR}/slurm-%j.out --time 16:00:00 --wckey sparse_scaling_law" -e "${bash_cmd}"
 # TODO: add inside a script?
 # python sample.py --out_dir=$EXP34_DIR > $EXP34_DIR/samples.txt
 # python plot_recurrent_loss.py --out_dir=$EXP34_DIR
