@@ -719,6 +719,7 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 sampled_depths = []
+last_mean_depth = None
 while True:
 
     # determine and set the learning rate for this iteration
@@ -748,23 +749,78 @@ while True:
                 log_dict["train/curriculum_difficulty"] = curriculum_difficulty_score
             # Add stopping metrics if they exist
             stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
+            stopping_mean_depth_logged = False
             if stopping_metrics:
-                log_dict.update({f"train/stopping/{k}": v for k, v in stopping_metrics.items()})
+                for k, v in stopping_metrics.items():
+                    key = f"train/stopping/{k}"
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() == 1:
+                            log_dict[key] = v.item()
+                        else:
+                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                    else:
+                        log_dict[key] = v
+                    if k == "mean_depth":
+                        stopping_mean_depth_logged = True
+                if not stopping_mean_depth_logged and last_mean_depth is not None:
+                    log_dict["train/stopping/mean_depth"] = last_mean_depth
             
             attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
+            attentive_mean_depth_logged = False
             if attentive_stopping_metrics:
-                log_dict.update({f"train/attentive_stopping/{k}": v for k, v in attentive_stopping_metrics.items()})
+                for k, v in attentive_stopping_metrics.items():
+                    key = f"train/attentive_stopping/{k}"
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() == 1:
+                            log_dict[key] = v.item()
+                        else:
+                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                    else:
+                        log_dict[key] = v
+                    if k == "mean_depth":
+                        attentive_mean_depth_logged = True
+                if not attentive_mean_depth_logged and last_mean_depth is not None:
+                    log_dict["train/attentive_stopping/mean_depth"] = last_mean_depth
             hard_attentive_metrics = getattr(raw_model, 'hard_attentive_stopping_metrics', None)
+            hard_attentive_mean_depth_logged = False
             if hard_attentive_metrics:
-                log_dict.update({f"train/hard_attentive_stopping/{k}": v for k, v in hard_attentive_metrics.items()})
+                for k, v in hard_attentive_metrics.items():
+                    key = f"train/hard_attentive_stopping/{k}"
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() == 1:
+                            log_dict[key] = v.item()
+                        else:
+                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                    else:
+                        log_dict[key] = v
+                    if k == "mean_depth":
+                        hard_attentive_mean_depth_logged = True
+                if not hard_attentive_mean_depth_logged and last_mean_depth is not None:
+                    log_dict["train/hard_attentive_stopping/mean_depth"] = last_mean_depth
 
             oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
             if oracle_metrics:
-                log_dict.update({f"train/oracle/{k}": v for k, v in oracle_metrics.items()})
+                for k, v in oracle_metrics.items():
+                    key = f"train/oracle/{k}"
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() == 1:
+                            log_dict[key] = v.item()
+                        else:
+                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                    else:
+                        log_dict[key] = v
 
             oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
             if oracle_metrics:
-                log_dict.update({f"train/oracle/{k}": v for k, v in oracle_metrics.items()})
+                for k, v in oracle_metrics.items():
+                    key = f"train/oracle/{k}"
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() == 1:
+                            log_dict[key] = v.item()
+                        else:
+                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                    else:
+                        log_dict[key] = v
 
             if log_correlation:
                 # calculate token embedding correlation
@@ -837,6 +893,16 @@ while True:
             if n is not None:
                 sampled_depths.append(n)
             logits, loss, num_expanded_layers = model(X, Y, n=n)
+            if num_expanded_layers is not None:
+                depth_value = num_expanded_layers
+                if hasattr(depth_value, "detach"):
+                    depth_value = depth_value.detach()
+                if hasattr(depth_value, "item"):
+                    depth_value = depth_value.item()
+                try:
+                    last_mean_depth = float(depth_value)
+                except (TypeError, ValueError):
+                    last_mean_depth = None
             if scale_loss_by_n_layer and num_expanded_layers is not None:
                 if n is not None and n > 0:
                     ref_layers = n
@@ -914,25 +980,80 @@ while True:
                 writer.add_scalar('train/curriculum_difficulty', curriculum_difficulty_score, iter_num)
             # Add stopping metrics if they exist
             stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
+            stopping_mean_depth_logged = False
             if stopping_metrics:
                 for k, v in stopping_metrics.items():
-                    writer.add_scalar(f"train/stopping/{k}", v, iter_num)
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() != 1:
+                            continue
+                        value = v.item()
+                    elif isinstance(v, (float, int)):
+                        value = v
+                    else:
+                        continue
+                    writer.add_scalar(f"train/stopping/{k}", value, iter_num)
+                    if k == "mean_depth":
+                        stopping_mean_depth_logged = True
+                if not stopping_mean_depth_logged and last_mean_depth is not None:
+                    writer.add_scalar("train/stopping/mean_depth", last_mean_depth, iter_num)
             attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
+            attentive_mean_depth_logged = False
             if attentive_stopping_metrics:
                 for k, v in attentive_stopping_metrics.items():
-                    writer.add_scalar(f"train/attentive_stopping/{k}", v, iter_num)
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() != 1:
+                            continue
+                        value = v.item()
+                    elif isinstance(v, (float, int)):
+                        value = v
+                    else:
+                        continue
+                    writer.add_scalar(f"train/attentive_stopping/{k}", value, iter_num)
+                    if k == "mean_depth":
+                        attentive_mean_depth_logged = True
+                if not attentive_mean_depth_logged and last_mean_depth is not None:
+                    writer.add_scalar("train/attentive_stopping/mean_depth", last_mean_depth, iter_num)
             hard_attentive_metrics = getattr(raw_model, 'hard_attentive_stopping_metrics', None)
+            hard_attentive_mean_depth_logged = False
             if hard_attentive_metrics:
                 for k, v in hard_attentive_metrics.items():
-                    writer.add_scalar(f"train/hard_attentive_stopping/{k}", v, iter_num)
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() != 1:
+                            continue
+                        value = v.item()
+                    elif isinstance(v, (float, int)):
+                        value = v
+                    else:
+                        continue
+                    writer.add_scalar(f"train/hard_attentive_stopping/{k}", value, iter_num)
+                    if k == "mean_depth":
+                        hard_attentive_mean_depth_logged = True
+                if not hard_attentive_mean_depth_logged and last_mean_depth is not None:
+                    writer.add_scalar("train/hard_attentive_stopping/mean_depth", last_mean_depth, iter_num)
             oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
             if oracle_metrics:
                 for k, v in oracle_metrics.items():
-                    writer.add_scalar(f"train/oracle/{k}", v, iter_num)
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() != 1:
+                            continue
+                        value = v.item()
+                    elif isinstance(v, (float, int)):
+                        value = v
+                    else:
+                        continue
+                    writer.add_scalar(f"train/oracle/{k}", value, iter_num)
             oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
             if oracle_metrics:
                 for k, v in oracle_metrics.items():
-                    writer.add_scalar(f"train/oracle/{k}", v, iter_num)
+                    if isinstance(v, torch.Tensor):
+                        if v.numel() != 1:
+                            continue
+                        value = v.item()
+                    elif isinstance(v, (float, int)):
+                        value = v
+                    else:
+                        continue
+                    writer.add_scalar(f"train/oracle/{k}", value, iter_num)
 
     iter_num += 1
     local_iter_num += 1

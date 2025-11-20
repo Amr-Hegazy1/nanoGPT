@@ -377,6 +377,13 @@ $TRAIN_CMD $BASE_ORACLE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_
 python sample.py --out_dir=$EXP34_DIR > $EXP34_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP34_DIR
 
+# Experiment 34b: Oracle Stopping Tokenwise + Fixed Edge Prelude + Noise (best configs)
+echo "Running experiment 34b: Oracle Stopping Tokenwise + Fixed Edge Prelude + Noise"
+EXP34B_DIR="out-gpt2-oracle-stopping-tokenwise-fixed-edge"
+$TRAIN_CMD $BASE_ORACLE_ARGS --stopping_tokenwise=True --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-fixed-edge-noise-prelude-concat" --out_dir=$EXP34B_DIR
+python sample.py --out_dir=$EXP34B_DIR > $EXP34B_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP34B_DIR
+
 # --- Attentive Stopping Experiments ---
 
 BASE_ATTENTIVE_ARGS="$BASE_RECURRENT_ARGS --attentive_stopping=True --attentive_stopping_controller_weight=0.05 --attentive_stopping_entropy_weight=0.01 --attentive_stopping_warmup_steps=200"
@@ -412,6 +419,16 @@ EXP38_DIR="out-gpt2-oracle-attentive-tokenwise"
 $TRAIN_CMD $BASE_ORACLE_ATTENTIVE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-attentive-tokenwise" --out_dir=$EXP38_DIR
 python sample.py --out_dir=$EXP38_DIR > $EXP38_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP38_DIR
+
+# --- Learned Stopping (best configs) ---
+
+BASE_LEARNED_FIXED_ARGS="$BASE_RECURRENT_ARGS --learned_stopping=True --fixed_edge_blocks=True --stopping_tokenwise=True"
+
+echo "Running experiment 39: Learned Stopping Tokenwise + Fixed Edge"
+EXP39_DIR="out-gpt2-recurrent-learned-stopping-tokenwise-fixed-edge"
+$TRAIN_CMD $BASE_LEARNED_FIXED_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-learned-stopping-tokenwise-fixed-edge" --out_dir=$EXP39_DIR
+python sample.py --out_dir=$EXP39_DIR > $EXP39_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP39_DIR
 
 
 echo "All experiments complete."
