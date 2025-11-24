@@ -209,11 +209,13 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
         num_layers = ctx.num_layers
         annotations = ctx.oracle
         aux_loss = ctx.aux_loss
+        loss_controller = getattr(model, "oracle_loss_controller", None)
 
         B = x.shape[0]
         device = x.device
         dtype = x.dtype
         prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+        oracle_temperature = getattr(model, "_oracle_runtime_temperature", model.oracle_temperature)
 
         num_expanded_layers_tensor = torch.zeros(B, device=device, dtype=prob_dtype)
         continue_probs = torch.ones(B, device=device, dtype=prob_dtype)
@@ -251,8 +253,8 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
                 difficulty_accum = difficulty_accum + torch.sigmoid(difficulty_logits).to(prob_dtype)
                 difficulty_steps += 1
 
-            if model.oracle_temperature != 1.0:
-                stop_logits = stop_logits / model.oracle_temperature
+            if oracle_temperature != 1.0:
+                stop_logits = stop_logits / oracle_temperature
             stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
             hard_stop_mask = None
             if not model.training and model.oracle_use_threshold:
@@ -266,7 +268,16 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
                 layer_stop_loss = F.binary_cross_entropy_with_logits(
                     stop_logits.to(prob_dtype), stop_target, reduction='none'
                 )
-                stop_loss = stop_loss + _masked_mean(layer_stop_loss, sequence_mask)
+                if loss_controller:
+                    stop_loss = stop_loss + loss_controller.reduce_stop_loss(
+                        layer_stop_loss,
+                        stop_prob,
+                        stop_target,
+                        getattr(annotations, "sequence_confidence", None) if annotations is not None else None,
+                        sequence_mask,
+                    )
+                else:
+                    stop_loss = stop_loss + _masked_mean(layer_stop_loss, sequence_mask)
 
             stop_mass = continue_probs * stop_prob
             stop_masses.append(stop_mass)
@@ -296,7 +307,14 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
             difficulty_pred = difficulty_accum / difficulty_steps
             difficulty_target = annotations.sequence_difficulty
             difficulty_loss_tensor = F.mse_loss(difficulty_pred, difficulty_target, reduction='none')
-            difficulty_loss = _masked_mean(difficulty_loss_tensor, sequence_mask)
+            if loss_controller:
+                difficulty_loss = loss_controller.reduce_difficulty_loss(
+                    difficulty_loss_tensor,
+                    getattr(annotations, "sequence_confidence", None),
+                    sequence_mask,
+                )
+            else:
+                difficulty_loss = _masked_mean(difficulty_loss_tensor, sequence_mask)
         else:
             difficulty_loss = torch.zeros((), device=device, dtype=prob_dtype)
 
@@ -327,11 +345,13 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
         num_layers = ctx.num_layers
         annotations = ctx.oracle
         aux_loss = ctx.aux_loss
+        loss_controller = getattr(model, "oracle_loss_controller", None)
 
         B, T = x.shape[:2]
         device = x.device
         dtype = x.dtype
         prob_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+        oracle_temperature = getattr(model, "_oracle_runtime_temperature", model.oracle_temperature)
 
         num_expanded_tokens = torch.zeros(B, T, device=device, dtype=prob_dtype)
         continue_probs = torch.ones(B, T, device=device, dtype=prob_dtype)
@@ -368,8 +388,8 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
                 difficulty_accum = difficulty_accum + torch.sigmoid(difficulty_logits).to(prob_dtype)
                 difficulty_steps += 1
 
-            if model.oracle_temperature != 1.0:
-                stop_logits = stop_logits / model.oracle_temperature
+            if oracle_temperature != 1.0:
+                stop_logits = stop_logits / oracle_temperature
             stop_prob = torch.sigmoid(stop_logits).to(prob_dtype)
             hard_stop_mask = None
             if not model.training and model.oracle_use_threshold:
@@ -383,7 +403,16 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
                 layer_stop_loss = F.binary_cross_entropy_with_logits(
                     stop_logits.to(prob_dtype), stop_target, reduction='none'
                 )
-                stop_loss = stop_loss + _masked_mean(layer_stop_loss, token_mask)
+                if loss_controller:
+                    stop_loss = stop_loss + loss_controller.reduce_stop_loss(
+                        layer_stop_loss,
+                        stop_prob,
+                        stop_target,
+                        getattr(annotations, "token_confidence", None) if annotations is not None else None,
+                        token_mask,
+                    )
+                else:
+                    stop_loss = stop_loss + _masked_mean(layer_stop_loss, token_mask)
 
             stop_mass = continue_probs * stop_prob
             stop_masses.append(stop_mass)
@@ -413,7 +442,14 @@ class OracleGuidedStoppingStrategy(StoppingStrategy):
             difficulty_pred = difficulty_accum / difficulty_steps
             difficulty_target = annotations.token_difficulty
             difficulty_loss_tensor = F.mse_loss(difficulty_pred, difficulty_target, reduction='none')
-            difficulty_loss = _masked_mean(difficulty_loss_tensor, token_mask)
+            if loss_controller:
+                difficulty_loss = loss_controller.reduce_difficulty_loss(
+                    difficulty_loss_tensor,
+                    getattr(annotations, "token_confidence", None),
+                    token_mask,
+                )
+            else:
+                difficulty_loss = _masked_mean(difficulty_loss_tensor, token_mask)
         else:
             difficulty_loss = torch.zeros((), device=device, dtype=prob_dtype)
 

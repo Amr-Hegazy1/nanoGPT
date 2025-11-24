@@ -18,6 +18,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from oracle_teacher import OracleAnnotations, OracleTeacher
+from oracle_controls import OracleCurriculumController, OracleLossController, OracleTeacherController
 from stopping import (
     AttentiveStoppingStrategy,
     DefaultStoppingStrategy,
@@ -359,6 +360,7 @@ class GPTConfig:
     # experiment: recurrent shared weights
     recurrent_shared_weights: bool = False
     recurrent_depth: int = 32 # default depth for recurrent shared weights
+    bp_truncate_depth: int = 0
     # MoE parameters
     moe: bool = False
     moe_num_experts: int = 4
@@ -387,6 +389,25 @@ class GPTConfig:
     oracle_min_prob: float = 1e-4
     oracle_use_threshold: bool = False
     oracle_threshold: float = 0.5
+    oracle_teacher_use_ema: bool = False
+    oracle_teacher_ema_decay: float = 0.999
+    oracle_teacher_ema_decay_min: float = 0.99
+    oracle_teacher_ema_decay_schedule: int = 0
+    oracle_adaptive_update_interval: bool = False
+    oracle_update_interval_min: int = 1
+    oracle_update_interval_max: int = 1000
+    oracle_update_interval_shrink: float = 0.8
+    oracle_update_interval_growth: float = 1.2
+    oracle_update_interval_tolerance: float = 0.05
+    oracle_confidence_weighting: bool = False
+    oracle_confidence_floor: float = 0.05
+    oracle_confidence_exponent: float = 1.0
+    oracle_confidence_ceiling: float = 1.0
+    oracle_stop_adv_clip: float = 0.0
+    oracle_curriculum_depth_start: Optional[int] = None
+    oracle_curriculum_depth_warmup_steps: int = 0
+    oracle_temperature_final: Optional[float] = None
+    oracle_temperature_schedule_steps: int = 0
     # attentive stopping
     attentive_stopping: bool = False
     attentive_stopping_warmup_steps: int = 0
@@ -432,6 +453,8 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+        self.bp_truncate_depth = max(0, int(getattr(config, 'bp_truncate_depth', 0) or 0))
+
         # new attributes for experiments
         self.sticky_dropout = config.sticky_dropout
         self.stopping_tokenwise = bool(getattr(config, 'stopping_tokenwise', False))
@@ -455,6 +478,10 @@ class GPT(nn.Module):
         self.oracle_min_prob = getattr(config, 'oracle_min_prob', 1e-4)
         self.oracle_use_threshold = getattr(config, 'oracle_use_threshold', False)
         self.oracle_threshold = getattr(config, 'oracle_threshold', 0.5)
+        self.oracle_teacher_controller = OracleTeacherController(config) if self.oracle_stopping else None
+        self.oracle_loss_controller = OracleLossController.from_config(config) if self.oracle_stopping else None
+        self.oracle_curriculum_controller = OracleCurriculumController(config) if self.oracle_stopping else None
+        self._oracle_runtime_temperature = self.oracle_temperature
 
         self.attentive_stopping = config.attentive_stopping
         self.attentive_stopping_warmup_steps = config.attentive_stopping_warmup_steps
@@ -649,6 +676,8 @@ class GPT(nn.Module):
             else:
                 self._copy_student_to_oracle()
                 self._oracle_last_update_step = 0
+            if self.oracle_teacher_controller:
+                self.oracle_teacher_controller.last_update_step = self._oracle_last_update_step
         else:
             teacher_model = self.oracle_teacher.model
             teacher_model.to(device=device, dtype=dtype)
@@ -658,11 +687,15 @@ class GPT(nn.Module):
         if not self.oracle_teacher:
             return
         teacher_model = self.oracle_teacher.model
-        with torch.no_grad():
-            teacher_model.load_state_dict(self.state_dict(), strict=False)
-        teacher_model.eval()
-        for param in teacher_model.parameters():
-            param.requires_grad_(False)
+        controller = self.oracle_teacher_controller
+        if controller and controller.use_ema:
+            controller._hard_copy(self, teacher_model)
+        else:
+            with torch.no_grad():
+                teacher_model.load_state_dict(self.state_dict(), strict=False)
+            teacher_model.eval()
+            for param in teacher_model.parameters():
+                param.requires_grad_(False)
 
     def maybe_update_oracle(self, step: int):
         if not self.oracle_stopping:
@@ -671,6 +704,12 @@ class GPT(nn.Module):
         dtype = next(self.parameters()).dtype
         self._ensure_oracle_teacher(device, dtype)
         if self.oracle_teacher is None:
+            return
+        controller = self.oracle_teacher_controller
+        if controller:
+            updated = controller.maybe_update(self, self.oracle_teacher.model, step, self.oracle_metrics)
+            if updated:
+                self._oracle_last_update_step = step
             return
         interval = max(1, int(self.oracle_update_interval) if self.oracle_update_interval is not None else 1)
         if self._oracle_last_update_step < 0 or (step - self._oracle_last_update_step) >= interval:
@@ -685,6 +724,7 @@ class GPT(nn.Module):
         return {
             "state_dict": state_dict,
             "last_update_step": self._oracle_last_update_step,
+            "controller": self.oracle_teacher_controller.state_dict() if self.oracle_teacher_controller else None,
         }
 
     def load_oracle_state(self, state: Optional[dict]):
@@ -697,6 +737,9 @@ class GPT(nn.Module):
             return
         teacher.load_state_dict(state.get("state_dict", {}))
         self._oracle_last_update_step = state.get("last_update_step", -1)
+        controller_state = state.get("controller", None)
+        if controller_state and self.oracle_teacher_controller:
+            self.oracle_teacher_controller.load_state_dict(controller_state)
 
     def _get_oracle_teacher(self, device: torch.device, dtype: torch.dtype) -> OracleTeacher:
         teacher = self._ensure_oracle_teacher(device, dtype)
@@ -751,12 +794,33 @@ class GPT(nn.Module):
                 if self.recurrent_prelude_injection:
                     prelude_output = x.clone()
 
+            if self.bp_truncate_depth > 0:
+                step_state = {"i": 0}
+                base_shared_block_fn = shared_block_fn
+
+                def truncated_block_fn(tensor, gate=None):
+                    step_idx = step_state["i"]
+                    step_state["i"] += 1
+                    if step_idx < self.bp_truncate_depth:
+                        with torch.no_grad():
+                            return base_shared_block_fn(tensor, gate=gate)
+                    return base_shared_block_fn(tensor, gate=gate)
+
+                shared_block_fn = truncated_block_fn
+
             # Determine the number of recurrent steps
             if self.config.recurrent_shared_weights:
                 # During training, n is sampled and passed. During inference, it can be user-specified.
                 num_layers = n if n is not None else self.config.recurrent_depth
             else:
                 num_layers = self.config.n_layer
+            if self.oracle_curriculum_controller:
+                num_layers = self.oracle_curriculum_controller.depth(num_layers, self._oracle_step)
+                self._oracle_runtime_temperature = self.oracle_curriculum_controller.temperature(
+                    self.oracle_temperature, self._oracle_step
+                )
+            else:
+                self._oracle_runtime_temperature = self.oracle_temperature
 
             oracle_annotations = None
             if self.oracle_stopping and targets is not None:

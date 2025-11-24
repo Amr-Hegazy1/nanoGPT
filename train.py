@@ -68,6 +68,7 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 share_parameters_across_layers = False
 recurrent_shared_weights = False
 recurrent_depth = 32
+bp_truncate_depth = 0
 # MoE parameters
 moe = False
 moe_num_experts = 4
@@ -108,6 +109,25 @@ oracle_temperature = 1.0
 oracle_min_prob = 1e-4
 oracle_use_threshold = False
 oracle_threshold = 0.5
+oracle_teacher_use_ema = False
+oracle_teacher_ema_decay = 0.999
+oracle_teacher_ema_decay_min = 0.99
+oracle_teacher_ema_decay_schedule = 0
+oracle_adaptive_update_interval = False
+oracle_update_interval_min = 1
+oracle_update_interval_max = 1000
+oracle_update_interval_shrink = 0.8
+oracle_update_interval_growth = 1.2
+oracle_update_interval_tolerance = 0.05
+oracle_confidence_weighting = False
+oracle_confidence_floor = 0.05
+oracle_confidence_exponent = 1.0
+oracle_confidence_ceiling = 1.0
+oracle_stop_adv_clip = 0.0
+oracle_curriculum_depth_start = None
+oracle_curriculum_depth_warmup_steps = 0
+oracle_temperature_final = None
+oracle_temperature_schedule_steps = 0
 stopping_tokenwise = False
 fixed_edge_blocks = False
 n_layers_prelude = 1
@@ -159,7 +179,8 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str)) and k != 'log_dist_peak']
 for optional_key in ['learned_stopping_target_depth', 'attentive_stopping_target_depth', 'oracle_bootstrap_checkpoint', 'oracle_max_depth',
                      'recurrent_noise_concat_dim', 'n_layers_prelude', 'n_layers_coda', 'log_correlation',
-                     'recurrent_depth_peak', 'recurrent_prelude_injection', 'recurrent_prelude_injection_mode']:
+                     'recurrent_depth_peak', 'recurrent_prelude_injection', 'recurrent_prelude_injection_mode',
+                     'oracle_curriculum_depth_start', 'oracle_temperature_final']:
     if optional_key not in config_keys and optional_key in globals():
         config_keys.append(optional_key)
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -405,6 +426,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   share_parameters_across_layers=share_parameters_across_layers,
                   recurrent_shared_weights=recurrent_shared_weights,
                   recurrent_depth=recurrent_depth,
+                  bp_truncate_depth=bp_truncate_depth,
                   moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing, share_moe_experts=share_moe_experts,
                   scale_loss_by_n_layer=scale_loss_by_n_layer,
                   sticky_dropout=sticky_dropout, learned_stopping=learned_stopping,
@@ -426,6 +448,25 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   oracle_min_prob=oracle_min_prob,
                   oracle_use_threshold=oracle_use_threshold,
                   oracle_threshold=oracle_threshold,
+                  oracle_teacher_use_ema=oracle_teacher_use_ema,
+                  oracle_teacher_ema_decay=oracle_teacher_ema_decay,
+                  oracle_teacher_ema_decay_min=oracle_teacher_ema_decay_min,
+                  oracle_teacher_ema_decay_schedule=oracle_teacher_ema_decay_schedule,
+                  oracle_adaptive_update_interval=oracle_adaptive_update_interval,
+                  oracle_update_interval_min=oracle_update_interval_min,
+                  oracle_update_interval_max=oracle_update_interval_max,
+                  oracle_update_interval_shrink=oracle_update_interval_shrink,
+                  oracle_update_interval_growth=oracle_update_interval_growth,
+                  oracle_update_interval_tolerance=oracle_update_interval_tolerance,
+                  oracle_confidence_weighting=oracle_confidence_weighting,
+                  oracle_confidence_floor=oracle_confidence_floor,
+                  oracle_confidence_exponent=oracle_confidence_exponent,
+                  oracle_confidence_ceiling=oracle_confidence_ceiling,
+                  oracle_stop_adv_clip=oracle_stop_adv_clip,
+                  oracle_curriculum_depth_start=oracle_curriculum_depth_start,
+                  oracle_curriculum_depth_warmup_steps=oracle_curriculum_depth_warmup_steps,
+                  oracle_temperature_final=oracle_temperature_final,
+                  oracle_temperature_schedule_steps=oracle_temperature_schedule_steps,
                   fixed_edge_blocks=fixed_edge_blocks,
                   use_rmsnorm=use_rmsnorm,
                   sandwich_norm=sandwich_norm,
@@ -474,6 +515,8 @@ elif init_from == 'resume':
         model_args['recurrent_shared_weights'] = checkpoint_model_args['recurrent_shared_weights']
     if 'recurrent_depth' in checkpoint_model_args:
         model_args['recurrent_depth'] = checkpoint_model_args['recurrent_depth']
+    if 'bp_truncate_depth' in checkpoint_model_args:
+        model_args['bp_truncate_depth'] = checkpoint_model_args['bp_truncate_depth']
     if 'moe' in checkpoint_model_args:
         model_args['moe'] = checkpoint_model_args['moe']
     if 'moe_num_experts' in checkpoint_model_args:
@@ -530,6 +573,44 @@ elif init_from == 'resume':
         model_args['oracle_use_threshold'] = checkpoint_model_args['oracle_use_threshold']
     if 'oracle_threshold' in checkpoint_model_args:
         model_args['oracle_threshold'] = checkpoint_model_args['oracle_threshold']
+    if 'oracle_teacher_use_ema' in checkpoint_model_args:
+        model_args['oracle_teacher_use_ema'] = checkpoint_model_args['oracle_teacher_use_ema']
+    if 'oracle_teacher_ema_decay' in checkpoint_model_args:
+        model_args['oracle_teacher_ema_decay'] = checkpoint_model_args['oracle_teacher_ema_decay']
+    if 'oracle_teacher_ema_decay_min' in checkpoint_model_args:
+        model_args['oracle_teacher_ema_decay_min'] = checkpoint_model_args['oracle_teacher_ema_decay_min']
+    if 'oracle_teacher_ema_decay_schedule' in checkpoint_model_args:
+        model_args['oracle_teacher_ema_decay_schedule'] = checkpoint_model_args['oracle_teacher_ema_decay_schedule']
+    if 'oracle_adaptive_update_interval' in checkpoint_model_args:
+        model_args['oracle_adaptive_update_interval'] = checkpoint_model_args['oracle_adaptive_update_interval']
+    if 'oracle_update_interval_min' in checkpoint_model_args:
+        model_args['oracle_update_interval_min'] = checkpoint_model_args['oracle_update_interval_min']
+    if 'oracle_update_interval_max' in checkpoint_model_args:
+        model_args['oracle_update_interval_max'] = checkpoint_model_args['oracle_update_interval_max']
+    if 'oracle_update_interval_shrink' in checkpoint_model_args:
+        model_args['oracle_update_interval_shrink'] = checkpoint_model_args['oracle_update_interval_shrink']
+    if 'oracle_update_interval_growth' in checkpoint_model_args:
+        model_args['oracle_update_interval_growth'] = checkpoint_model_args['oracle_update_interval_growth']
+    if 'oracle_update_interval_tolerance' in checkpoint_model_args:
+        model_args['oracle_update_interval_tolerance'] = checkpoint_model_args['oracle_update_interval_tolerance']
+    if 'oracle_confidence_weighting' in checkpoint_model_args:
+        model_args['oracle_confidence_weighting'] = checkpoint_model_args['oracle_confidence_weighting']
+    if 'oracle_confidence_floor' in checkpoint_model_args:
+        model_args['oracle_confidence_floor'] = checkpoint_model_args['oracle_confidence_floor']
+    if 'oracle_confidence_exponent' in checkpoint_model_args:
+        model_args['oracle_confidence_exponent'] = checkpoint_model_args['oracle_confidence_exponent']
+    if 'oracle_confidence_ceiling' in checkpoint_model_args:
+        model_args['oracle_confidence_ceiling'] = checkpoint_model_args['oracle_confidence_ceiling']
+    if 'oracle_stop_adv_clip' in checkpoint_model_args:
+        model_args['oracle_stop_adv_clip'] = checkpoint_model_args['oracle_stop_adv_clip']
+    if 'oracle_curriculum_depth_start' in checkpoint_model_args:
+        model_args['oracle_curriculum_depth_start'] = checkpoint_model_args['oracle_curriculum_depth_start']
+    if 'oracle_curriculum_depth_warmup_steps' in checkpoint_model_args:
+        model_args['oracle_curriculum_depth_warmup_steps'] = checkpoint_model_args['oracle_curriculum_depth_warmup_steps']
+    if 'oracle_temperature_final' in checkpoint_model_args:
+        model_args['oracle_temperature_final'] = checkpoint_model_args['oracle_temperature_final']
+    if 'oracle_temperature_schedule_steps' in checkpoint_model_args:
+        model_args['oracle_temperature_schedule_steps'] = checkpoint_model_args['oracle_temperature_schedule_steps']
     if 'fixed_edge_blocks' in checkpoint_model_args:
         model_args['fixed_edge_blocks'] = checkpoint_model_args['fixed_edge_blocks']
     if 'use_rmsnorm' in checkpoint_model_args:
@@ -573,6 +654,7 @@ elif init_from.startswith('gpt2'):
     model_args['share_parameters_across_layers'] = getattr(model.config, 'share_parameters_across_layers', False)
     model_args['recurrent_shared_weights'] = getattr(model.config, 'recurrent_shared_weights', False)
     model_args['recurrent_depth'] = getattr(model.config, 'recurrent_depth', 32)
+    model_args['bp_truncate_depth'] = getattr(model.config, 'bp_truncate_depth', 0)
     model_args['moe'] = getattr(model.config, 'moe', False)
     model_args['moe_num_experts'] = getattr(model.config, 'moe_num_experts', 4)
     model_args['moe_top_k'] = getattr(model.config, 'moe_top_k', 2)
@@ -601,6 +683,25 @@ elif init_from.startswith('gpt2'):
     model_args['oracle_min_prob'] = getattr(model.config, 'oracle_min_prob', 1e-4)
     model_args['oracle_use_threshold'] = getattr(model.config, 'oracle_use_threshold', False)
     model_args['oracle_threshold'] = getattr(model.config, 'oracle_threshold', 0.5)
+    model_args['oracle_teacher_use_ema'] = getattr(model.config, 'oracle_teacher_use_ema', False)
+    model_args['oracle_teacher_ema_decay'] = getattr(model.config, 'oracle_teacher_ema_decay', 0.999)
+    model_args['oracle_teacher_ema_decay_min'] = getattr(model.config, 'oracle_teacher_ema_decay_min', 0.99)
+    model_args['oracle_teacher_ema_decay_schedule'] = getattr(model.config, 'oracle_teacher_ema_decay_schedule', 0)
+    model_args['oracle_adaptive_update_interval'] = getattr(model.config, 'oracle_adaptive_update_interval', False)
+    model_args['oracle_update_interval_min'] = getattr(model.config, 'oracle_update_interval_min', 1)
+    model_args['oracle_update_interval_max'] = getattr(model.config, 'oracle_update_interval_max', 1000)
+    model_args['oracle_update_interval_shrink'] = getattr(model.config, 'oracle_update_interval_shrink', 0.8)
+    model_args['oracle_update_interval_growth'] = getattr(model.config, 'oracle_update_interval_growth', 1.2)
+    model_args['oracle_update_interval_tolerance'] = getattr(model.config, 'oracle_update_interval_tolerance', 0.05)
+    model_args['oracle_confidence_weighting'] = getattr(model.config, 'oracle_confidence_weighting', False)
+    model_args['oracle_confidence_floor'] = getattr(model.config, 'oracle_confidence_floor', 0.05)
+    model_args['oracle_confidence_exponent'] = getattr(model.config, 'oracle_confidence_exponent', 1.0)
+    model_args['oracle_confidence_ceiling'] = getattr(model.config, 'oracle_confidence_ceiling', 1.0)
+    model_args['oracle_stop_adv_clip'] = getattr(model.config, 'oracle_stop_adv_clip', 0.0)
+    model_args['oracle_curriculum_depth_start'] = getattr(model.config, 'oracle_curriculum_depth_start', None)
+    model_args['oracle_curriculum_depth_warmup_steps'] = getattr(model.config, 'oracle_curriculum_depth_warmup_steps', 0)
+    model_args['oracle_temperature_final'] = getattr(model.config, 'oracle_temperature_final', None)
+    model_args['oracle_temperature_schedule_steps'] = getattr(model.config, 'oracle_temperature_schedule_steps', 0)
     model_args['fixed_edge_blocks'] = getattr(model.config, 'fixed_edge_blocks', False)
     model_args['use_rmsnorm'] = getattr(model.config, 'use_rmsnorm', False)
     model_args['sandwich_norm'] = getattr(model.config, 'sandwich_norm', False)

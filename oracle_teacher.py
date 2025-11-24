@@ -21,9 +21,11 @@ class OracleAnnotations:
     token_stop_depths: torch.Tensor  # (B, T)
     token_difficulty: torch.Tensor  # (B, T)
     token_stop_targets: torch.Tensor  # (B, T, L)
+    token_confidence: torch.Tensor  # (B, T)
     sequence_stop_depths: torch.Tensor  # (B,)
     sequence_difficulty: torch.Tensor  # (B,)
     sequence_stop_targets: torch.Tensor  # (B, L)
+    sequence_confidence: torch.Tensor  # (B,)
     valid_mask: torch.Tensor  # (B, T)
     num_layers: int
 
@@ -115,18 +117,30 @@ class OracleTeacher:
         valid_mask = targets.ne(-1)
         fallback_depth = torch.tensor(num_layers - 1, device=device, dtype=torch.long)
         token_stop_depths = torch.full_like(targets, fill_value=-1, dtype=torch.long, device=device)
+        token_confidence = torch.zeros_like(targets, dtype=torch.float32, device=device)
+        fallback_confidence = torch.zeros_like(targets, dtype=torch.float32, device=device)
 
         # Scan each depth until we find when a token first becomes correct.
         for depth_idx, logits in enumerate(logits_per_layer):
+            log_probs = torch.log_softmax(logits, dim=-1)
+            target_logp = log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+            target_prob = target_logp.exp().to(token_confidence.dtype)
+            fallback_confidence = target_prob
             preds = torch.argmax(logits, dim=-1)
             correct = preds.eq(targets) & valid_mask
             needs_update = (token_stop_depths < 0) & correct
             token_stop_depths = torch.where(needs_update, torch.full_like(token_stop_depths, depth_idx), token_stop_depths)
+            token_confidence = torch.where(needs_update, target_prob, token_confidence)
 
         token_stop_depths = torch.where(
             valid_mask,
             torch.where(token_stop_depths >= 0, token_stop_depths, fallback_depth),
             torch.zeros_like(token_stop_depths),
+        )
+        token_confidence = torch.where(
+            valid_mask,
+            torch.where(token_stop_depths >= 0, token_confidence, fallback_confidence),
+            torch.zeros_like(token_confidence),
         )
 
         denom = float(num_layers)
@@ -151,6 +165,12 @@ class OracleTeacher:
         )
         sequence_difficulty = (sequence_stop_depths.to(torch.float32) + 1.0) / denom
         sequence_difficulty = torch.where(any_valid, sequence_difficulty, torch.zeros_like(sequence_difficulty))
+        sequence_depth_mask = token_stop_depths.eq(sequence_stop_depths.unsqueeze(-1)) & valid_mask
+        sequence_confidence = torch.where(
+            any_valid,
+            torch.where(sequence_depth_mask, token_confidence, torch.zeros_like(token_confidence)).max(dim=1).values,
+            torch.zeros_like(sequence_stop_depths, dtype=torch.float32),
+        )
 
         seq_depths_expanded = sequence_stop_depths.unsqueeze(-1).expand(-1, num_layers)
         # Sequence-level one-hot targets (B, num_layers).
@@ -165,9 +185,11 @@ class OracleTeacher:
             token_stop_depths=token_stop_depths,
             token_difficulty=token_difficulty,
             token_stop_targets=token_stop_targets,
+            token_confidence=token_confidence,
             sequence_stop_depths=sequence_stop_depths,
             sequence_difficulty=sequence_difficulty,
             sequence_stop_targets=sequence_stop_targets,
+            sequence_confidence=sequence_confidence,
             valid_mask=valid_mask,
             num_layers=num_layers,
         )
