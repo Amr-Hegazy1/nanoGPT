@@ -89,13 +89,13 @@ BASE_RECURRENT_ARGS="$CONFIG --max_iters=$MAX_ITERS --lr_decay_iters=$MAX_ITERS 
 
 # --- Oracle Stopping Experiments ---
 
-BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1 --recurrent_depth_schedule_min_depth=24"
+BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1 --recurrent_depth_schedule_min_depth=12 --recurrent_depth_peak=24"
 
 
 
 # Experiment 2: Oracle Stopping (Tokenwise)
 echo "Running experiment 2: Oracle Stopping (Tokenwise)"
-EXP34_NAME="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat-steps${MAX_ITERS}-fixlr"
+EXP34_NAME="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat-steps${MAX_ITERS}-fixlr-mindepth12"
 EXP34_DIR=logs/$EXP34_NAME
 mkdir -p $EXP34_DIR
 bash_cmd="$TRAIN_CMD $BASE_ORACLE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP34_NAME --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --out_dir=$EXP34_DIR"
