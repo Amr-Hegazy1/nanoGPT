@@ -17,7 +17,7 @@ max_iters = 2000
 lr_decay_iters = 2000
 
 # eval stuff
-eval_interval = 100
+eval_interval = 1000
 eval_iters = 200
 log_interval = 10
 
