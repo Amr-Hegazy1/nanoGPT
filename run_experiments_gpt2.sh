@@ -240,6 +240,20 @@ $TRAIN_CMD $BASE_RECURRENT_ARGS --stop_use_cumsum_pooling=True --stop_disable_po
 python sample.py --out_dir=$EXP20_DIR > $EXP20_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP20_DIR
 
+# Experiment 21: Recurrent Shared Weights with truncated BPTT (depth 2)
+echo "Running experiment 21: Recurrent Shared Weights with truncated BPTT (depth 2)"
+EXP21_DIR="out-gpt2-recurrent-truncated-bptt-2"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --bp_truncate_depth=2 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-truncated-bptt-2" --out_dir=$EXP21_DIR
+python sample.py --out_dir=$EXP21_DIR > $EXP21_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP21_DIR
+
+# Experiment 22: Recurrent Shared Weights with truncated BPTT (depth 4)
+echo "Running experiment 22: Recurrent Shared Weights with truncated BPTT (depth 4)"
+EXP22_DIR="out-gpt2-recurrent-truncated-bptt-4"
+$TRAIN_CMD $BASE_RECURRENT_ARGS --bp_truncate_depth=4 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="recurrent-truncated-bptt-4" --out_dir=$EXP22_DIR
+python sample.py --out_dir=$EXP22_DIR > $EXP22_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP22_DIR
+
 # Experiment 21: Recurrent Shared Weights with (2, 4, 2) configuration
 echo "Running experiment 21: Recurrent Shared Weights with (2, 4, 2) configuration"
 EXP21_DIR="out-gpt2-recurrent-2-4-2"
@@ -362,6 +376,11 @@ python plot_recurrent_loss.py --out_dir=$EXP32_DIR
 # --- Oracle Stopping Experiments ---
 
 BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1 --recurrent_depth_schedule_min_depth=24"
+BASE_ORACLE_EMA_ARGS="$BASE_ORACLE_ARGS --oracle_teacher_use_ema=True --oracle_teacher_ema_decay=0.999 --oracle_teacher_ema_decay_min=0.99 --oracle_teacher_ema_decay_schedule=2000"
+BASE_ORACLE_CONF_ARGS="$BASE_ORACLE_ARGS --oracle_confidence_weighting=True --oracle_confidence_floor=0.05 --oracle_confidence_exponent=1.0 --oracle_confidence_ceiling=1.0 --oracle_stop_adv_clip=3.0"
+BASE_ORACLE_ADAPTIVE_ARGS="$BASE_ORACLE_ARGS --oracle_adaptive_update_interval=True --oracle_update_interval_min=25 --oracle_update_interval_max=200 --oracle_update_interval_shrink=0.8 --oracle_update_interval_growth=1.2 --oracle_update_interval_tolerance=0.05"
+BASE_ORACLE_CURRICULUM_ARGS="$BASE_ORACLE_ARGS --oracle_curriculum_depth_start=12 --oracle_curriculum_depth_warmup_steps=2000 --oracle_temperature_final=0.8 --oracle_temperature_schedule_steps=2000"
+BASE_ORACLE_ENHANCED_ARGS="$BASE_ORACLE_EMA_ARGS --oracle_confidence_weighting=True --oracle_confidence_floor=0.05 --oracle_confidence_exponent=1.0 --oracle_confidence_ceiling=1.0 --oracle_stop_adv_clip=3.0 --oracle_adaptive_update_interval=True --oracle_update_interval_min=25 --oracle_update_interval_max=200 --oracle_update_interval_shrink=0.8 --oracle_update_interval_growth=1.2 --oracle_update_interval_tolerance=0.05 --oracle_curriculum_depth_start=12 --oracle_curriculum_depth_warmup_steps=2000 --oracle_temperature_final=0.8 --oracle_temperature_schedule_steps=2000"
 
 # Experiment 33: Oracle Stopping (Sequence-Level)
 echo "Running experiment 33: Oracle Stopping (Sequence-Level)"
@@ -383,6 +402,13 @@ EXP34B_DIR="out-gpt2-oracle-stopping-tokenwise-fixed-edge"
 $TRAIN_CMD $BASE_ORACLE_ARGS --stopping_tokenwise=True --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-fixed-edge-noise-prelude-concat" --out_dir=$EXP34B_DIR
 python sample.py --out_dir=$EXP34B_DIR > $EXP34B_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP34B_DIR
+
+# Experiment 34c: Oracle Stopping Tokenwise + Fixed Edge Prelude + Noise (enhanced teacher/loss curriculum)
+echo "Running experiment 34c: Oracle Stopping Tokenwise + Fixed Edge Prelude + Noise (enhanced)"
+EXP34C_DIR="out-gpt2-oracle-stopping-tokenwise-fixed-edge-enhanced"
+$TRAIN_CMD $BASE_ORACLE_ENHANCED_ARGS --stopping_tokenwise=True --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-fixed-edge-enhanced" --out_dir=$EXP34C_DIR
+python sample.py --out_dir=$EXP34C_DIR > $EXP34C_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP34C_DIR
 
 # --- Attentive Stopping Experiments ---
 
@@ -419,6 +445,62 @@ EXP38_DIR="out-gpt2-oracle-attentive-tokenwise"
 $TRAIN_CMD $BASE_ORACLE_ATTENTIVE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-attentive-tokenwise" --out_dir=$EXP38_DIR
 python sample.py --out_dir=$EXP38_DIR > $EXP38_DIR/samples.txt
 python plot_recurrent_loss.py --out_dir=$EXP38_DIR
+
+# Experiment 40: Oracle Stopping with EMA teacher (Sequence-Level)
+echo "Running experiment 40: Oracle Stopping with EMA teacher (Sequence-Level)"
+EXP40_DIR="out-gpt2-oracle-stopping-seq-ema"
+$TRAIN_CMD $BASE_ORACLE_EMA_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-seq-ema" --out_dir=$EXP40_DIR
+python sample.py --out_dir=$EXP40_DIR > $EXP40_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP40_DIR
+
+# Experiment 41: Oracle Stopping with EMA teacher (Tokenwise)
+echo "Running experiment 41: Oracle Stopping with EMA teacher (Tokenwise)"
+EXP41_DIR="out-gpt2-oracle-stopping-tokenwise-ema"
+$TRAIN_CMD $BASE_ORACLE_EMA_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-ema" --out_dir=$EXP41_DIR
+python sample.py --out_dir=$EXP41_DIR > $EXP41_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP41_DIR
+
+# Experiment 42: Oracle Stopping with confidence weighting + advantage clipping (Sequence-Level)
+echo "Running experiment 42: Oracle Stopping with confidence weighting (Sequence-Level)"
+EXP42_DIR="out-gpt2-oracle-stopping-seq-confidence"
+$TRAIN_CMD $BASE_ORACLE_CONF_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-seq-confidence" --out_dir=$EXP42_DIR
+python sample.py --out_dir=$EXP42_DIR > $EXP42_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP42_DIR
+
+# Experiment 43: Oracle Stopping with confidence weighting + advantage clipping (Tokenwise)
+echo "Running experiment 43: Oracle Stopping with confidence weighting (Tokenwise)"
+EXP43_DIR="out-gpt2-oracle-stopping-tokenwise-confidence"
+$TRAIN_CMD $BASE_ORACLE_CONF_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-confidence" --out_dir=$EXP43_DIR
+python sample.py --out_dir=$EXP43_DIR > $EXP43_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP43_DIR
+
+# Experiment 44: Oracle Stopping with adaptive update interval (Sequence-Level)
+echo "Running experiment 44: Oracle Stopping with adaptive update interval (Sequence-Level)"
+EXP44_DIR="out-gpt2-oracle-stopping-seq-adaptive"
+$TRAIN_CMD $BASE_ORACLE_ADAPTIVE_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-seq-adaptive" --out_dir=$EXP44_DIR
+python sample.py --out_dir=$EXP44_DIR > $EXP44_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP44_DIR
+
+# Experiment 45: Oracle Stopping with adaptive update interval (Tokenwise)
+echo "Running experiment 45: Oracle Stopping with adaptive update interval (Tokenwise)"
+EXP45_DIR="out-gpt2-oracle-stopping-tokenwise-adaptive"
+$TRAIN_CMD $BASE_ORACLE_ADAPTIVE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-adaptive" --out_dir=$EXP45_DIR
+python sample.py --out_dir=$EXP45_DIR > $EXP45_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP45_DIR
+
+# Experiment 46: Oracle Stopping with curriculum (Sequence-Level)
+echo "Running experiment 46: Oracle Stopping with curriculum (Sequence-Level)"
+EXP46_DIR="out-gpt2-oracle-stopping-seq-curriculum"
+$TRAIN_CMD $BASE_ORACLE_CURRICULUM_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-seq-curriculum" --out_dir=$EXP46_DIR
+python sample.py --out_dir=$EXP46_DIR > $EXP46_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP46_DIR
+
+# Experiment 47: Oracle Stopping with curriculum (Tokenwise)
+echo "Running experiment 47: Oracle Stopping with curriculum (Tokenwise)"
+EXP47_DIR="out-gpt2-oracle-stopping-tokenwise-curriculum"
+$TRAIN_CMD $BASE_ORACLE_CURRICULUM_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name="oracle-stopping-tokenwise-curriculum" --out_dir=$EXP47_DIR
+python sample.py --out_dir=$EXP47_DIR > $EXP47_DIR/samples.txt
+python plot_recurrent_loss.py --out_dir=$EXP47_DIR
 
 # --- Learned Stopping (best configs) ---
 
