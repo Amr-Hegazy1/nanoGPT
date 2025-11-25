@@ -63,16 +63,17 @@ fi
 # TODO: add argument in script to resume
 # TODO: deduce WANDB_RUN_ID from out_dir
 RESUME_ARGS="--init_from=resume --wandb_resume=allow --wandb_run_id=$WANDB_RUN_ID"
+LEARNING_RATE_ARGS="" # "--learning_rate=3e-4 --min_lr=3e-5 --lr_decay_iters=$MAX_ITERS"
 
 # --- Base Experiments ---
 # TODO: if resume, get wandb_run_id and wandb_resume
 # Experiment 1: Baseline
 echo "Running experiment 1: Baseline"
-EXP1_NAME="baseline-steps${MAX_ITERS}-fixlr"
+EXP1_NAME="baseline-steps${MAX_ITERS}-halflr"
 EXP1_DIR=logs/$EXP1_NAME
 mkdir -p $EXP1_DIR
-bash_cmd="$TRAIN_CMD $CONFIG --max_iters=$MAX_ITERS --lr_decay_iters=$MAX_ITERS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP1_NAME --out_dir=$EXP1_DIR --compile=False --batch_size=2 --gradient_accumulation_steps=80 --log_correlation=True"
-cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP1_NAME} -o ${EXP1_DIR}/slurm-%j.out --time 24:00:00 --wckey sparse_scaling_law" -e "${bash_cmd}"
+bash_cmd="nvidia-smi; $TRAIN_CMD $CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP1_NAME --out_dir=$EXP1_DIR --compile=False --batch_size=2 --gradient_accumulation_steps=80 --log_correlation=True"
+# cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP1_NAME} -o ${EXP1_DIR}/slurm-%j.out --time 24:00:00 --wckey sparse_scaling_law --gres=gpu:8 --nodes=1 --tasks-per-node=8 --exclusive" -e "${bash_cmd}"
 # TODO: Add inside a script? Then add a slurm wrapper script? Or just add cmd to README.md
 # echo "Sampling from experiment 1"
 # python sample.py --out_dir=$EXP1_DIR > $EXP1_DIR/samples.txt
@@ -80,7 +81,7 @@ cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP1_NAME} -
 
 # TODO: unify base args for baseline and recurrent?
 # Base for this section: Recurrent Shared Weights
-BASE_RECURRENT_ARGS="$CONFIG --max_iters=$MAX_ITERS --lr_decay_iters=$MAX_ITERS --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=2 --gradient_accumulation_steps=80 --log_correlation=True --recurrent_depth_peak=32"
+BASE_RECURRENT_ARGS="$CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_ARGS --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=2 --gradient_accumulation_steps=80 --log_correlation=True --recurrent_depth_peak=32"
 
 
 
@@ -95,11 +96,11 @@ BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_in
 
 # Experiment 2: Oracle Stopping (Tokenwise)
 echo "Running experiment 2: Oracle Stopping (Tokenwise)"
-EXP34_NAME="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat-steps${MAX_ITERS}-fixlr-mindepth12"
+EXP34_NAME="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat-steps${MAX_ITERS}-mindepth12"
 EXP34_DIR=logs/$EXP34_NAME
 mkdir -p $EXP34_DIR
-bash_cmd="$TRAIN_CMD $BASE_ORACLE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP34_NAME --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --out_dir=$EXP34_DIR"
-cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP34_NAME} -o ${EXP34_DIR}/slurm-%j.out --time 24:00:00 --wckey sparse_scaling_law" -e "${bash_cmd}"
+bash_cmd="nvidia-smi; $TRAIN_CMD $BASE_ORACLE_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP34_NAME --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --out_dir=$EXP34_DIR"
+cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP34_NAME} -o ${EXP34_DIR}/slurm-%j.out --time 24:00:00 --wckey sparse_scaling_law --gres=gpu:8 --nodes=1 --tasks-per-node=8 --exclusive" -e "${bash_cmd}"
 # TODO: add inside a script?
 # python sample.py --out_dir=$EXP34_DIR > $EXP34_DIR/samples.txt
 # python plot_recurrent_loss.py --out_dir=$EXP34_DIR
