@@ -1058,7 +1058,7 @@ while True:
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
-    should_log_norms = master_process and (iter_num % log_interval == 0)
+    should_log_norms = master_process and (iter_num % eval_interval == 0)
     student_grad_norm = None
     student_weight_norm = None
     teacher_weight_norm = None
@@ -1101,6 +1101,25 @@ while True:
         ratio_clamped = max(difficulty_min_ratio, min(difficulty_max_ratio, difficulty_ratio))
         curriculum_difficulty_score = (ratio_clamped - difficulty_min_ratio) / difficulty_ratio_span
 
+    # log norms on evaluation cadence to align with oracle diagnostics
+    if should_log_norms and master_process:
+        if wandb_log:
+            norm_log = {"iter": iter_num}
+            if student_grad_norm is not None:
+                norm_log["train/norms/student_grad_mean"] = student_grad_norm
+            if student_weight_norm is not None:
+                norm_log["train/norms/student_weight_mean"] = student_weight_norm
+            if teacher_weight_norm is not None:
+                norm_log["train/norms/teacher_weight_mean"] = teacher_weight_norm
+            wandb.log(norm_log)
+        if tensorboard_log:
+            if student_grad_norm is not None:
+                writer.add_scalar('train/norms/student_grad_mean', student_grad_norm, iter_num)
+            if student_weight_norm is not None:
+                writer.add_scalar('train/norms/student_weight_mean', student_weight_norm, iter_num)
+            if teacher_weight_norm is not None:
+                writer.add_scalar('train/norms/teacher_weight_mean', teacher_weight_norm, iter_num)
+
     # timing and logging
     t1 = time.time()
     dt = t1 - t0
@@ -1114,35 +1133,12 @@ while True:
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-        if wandb_log:
-            log_dict = {
-                "iter": iter_num,
-                "train/loss": lossf,
-                "lr": lr,
-                "mfu": running_mfu*100,
-            }
-            if student_grad_norm is not None:
-                log_dict["train/norms/student_grad_mean"] = student_grad_norm
-            if student_weight_norm is not None:
-                log_dict["train/norms/student_weight_mean"] = student_weight_norm
-            if teacher_weight_norm is not None:
-                log_dict["train/norms/teacher_weight_mean"] = teacher_weight_norm
-            if curriculum_feedback_metric is not None:
-                log_dict["train/curriculum_feedback"] = curriculum_feedback_metric
-            if curriculum_difficulty_score is not None:
-                log_dict["train/curriculum_difficulty"] = curriculum_difficulty_score
-            wandb.log(log_dict)
+        
 
         if tensorboard_log:
             writer.add_scalar('train/loss', lossf, iter_num)
             writer.add_scalar('lr', lr, iter_num)
             writer.add_scalar('mfu', running_mfu*100, iter_num)
-            if student_grad_norm is not None:
-                writer.add_scalar('train/norms/student_grad_mean', student_grad_norm, iter_num)
-            if student_weight_norm is not None:
-                writer.add_scalar('train/norms/student_weight_mean', student_weight_norm, iter_num)
-            if teacher_weight_norm is not None:
-                writer.add_scalar('train/norms/teacher_weight_mean', teacher_weight_norm, iter_num)
             if curriculum_feedback_metric is not None:
                 writer.add_scalar('train/curriculum_feedback', curriculum_feedback_metric, iter_num)
             if curriculum_difficulty_score is not None:
