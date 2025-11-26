@@ -770,6 +770,39 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
     return min_lr + coeff * (learning_rate - min_lr)
 
+@torch.no_grad()
+def get_mean_weight_norm(model):
+    """
+    Calculates the mean L2 norm of all model weights.
+    Returns the mean norm as a float.
+    """
+    total_norm_sum = 0.0
+    count = 0
+    for _, parameter in model.named_parameters():
+        if parameter is None:
+            continue
+        weight_norm = torch.norm(parameter.detach(), p=2)
+        total_norm_sum += weight_norm.item()
+        count += 1
+    return total_norm_sum / count if count > 0 else 0.0
+
+@torch.no_grad()
+def get_mean_grad_norm(model):
+    """
+    Calculates the mean L2 norm of all model gradients.
+    Returns the mean norm as a float.
+    """
+    total_norm_sum = 0.0
+    count = 0
+    for _, parameter in model.named_parameters():
+        grad = parameter.grad
+        if grad is None:
+            continue
+        grad_norm = torch.norm(grad.detach(), p=2)
+        total_norm_sum += grad_norm.item()
+        count += 1
+    return total_norm_sum / count if count > 0 else 0.0
+
 # logging
 if wandb_log and master_process:
     import wandb
@@ -1025,18 +1058,32 @@ while True:
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
-    if grad_clip != 0.0:
+    should_log_norms = master_process and (iter_num % log_interval == 0)
+    student_grad_norm = None
+    student_weight_norm = None
+    teacher_weight_norm = None
+    needs_unscale = scaler.is_enabled() and (grad_clip != 0.0 or should_log_norms)
+    if needs_unscale:
         scaler.unscale_(optimizer)
+    if should_log_norms:
+        student_grad_norm = get_mean_grad_norm(raw_model)
+    if grad_clip != 0.0:
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     scaler.update()
+    if should_log_norms:
+        student_weight_norm = get_mean_weight_norm(raw_model)
     # flush the gradients as soon as we can, no need for this memory anymore
     optimizer.zero_grad(set_to_none=True)
     if hasattr(raw_model, "maybe_update_oracle"):
         raw_model.maybe_update_oracle(iter_num)
     if hasattr(raw_model, "maybe_update_oracle"):
         raw_model.maybe_update_oracle(iter_num)
+    if should_log_norms:
+        teacher = getattr(raw_model, "oracle_teacher", None)
+        if teacher is not None and hasattr(teacher, "model"):
+            teacher_weight_norm = get_mean_weight_norm(teacher.model)
 
     if last_micro_loss_value is not None:
         if curriculum_loss_ema is None:
@@ -1067,14 +1114,35 @@ while True:
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-
-
-
+        if wandb_log:
+            log_dict = {
+                "iter": iter_num,
+                "train/loss": lossf,
+                "lr": lr,
+                "mfu": running_mfu*100,
+            }
+            if student_grad_norm is not None:
+                log_dict["train/norms/student_grad_mean"] = student_grad_norm
+            if student_weight_norm is not None:
+                log_dict["train/norms/student_weight_mean"] = student_weight_norm
+            if teacher_weight_norm is not None:
+                log_dict["train/norms/teacher_weight_mean"] = teacher_weight_norm
+            if curriculum_feedback_metric is not None:
+                log_dict["train/curriculum_feedback"] = curriculum_feedback_metric
+            if curriculum_difficulty_score is not None:
+                log_dict["train/curriculum_difficulty"] = curriculum_difficulty_score
+            wandb.log(log_dict)
 
         if tensorboard_log:
             writer.add_scalar('train/loss', lossf, iter_num)
             writer.add_scalar('lr', lr, iter_num)
             writer.add_scalar('mfu', running_mfu*100, iter_num)
+            if student_grad_norm is not None:
+                writer.add_scalar('train/norms/student_grad_mean', student_grad_norm, iter_num)
+            if student_weight_norm is not None:
+                writer.add_scalar('train/norms/student_weight_mean', student_weight_norm, iter_num)
+            if teacher_weight_norm is not None:
+                writer.add_scalar('train/norms/teacher_weight_mean', teacher_weight_norm, iter_num)
             if curriculum_feedback_metric is not None:
                 writer.add_scalar('train/curriculum_feedback', curriculum_feedback_metric, iter_num)
             if curriculum_difficulty_score is not None:
