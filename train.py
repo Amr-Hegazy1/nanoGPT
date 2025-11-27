@@ -913,12 +913,14 @@ while True:
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
 
-
+    # TODO: Should we move this till after training completes?
     if iter_num % log_interval == 0 and master_process:
         log_dict.update({
             "iter": iter_num,
             "lr": lr,
             "mfu": running_mfu*100, # convert to percentage
+            "train/ce_loss": getattr(raw_model, 'ce_loss', None),
+            "train/total_loss": getattr(raw_model, 'total_loss', None)
         })
 
         if len(sampled_depths) > 0:
