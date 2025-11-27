@@ -34,6 +34,7 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
 from curriculum import determine_recurrent_depth, parse_schedule_options
+from utils import log_config, log_command, log_code_status, log_wandb_run_id
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -353,6 +354,9 @@ if master_process:
     if tensorboard_log:
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(log_dir=out_dir)
+    log_config(config, out_dir)
+    log_command(out_dir)
+    log_code_status(out_dir)
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -835,6 +839,7 @@ if wandb_log and master_process:
                 wandb.config.update(config, allow_val_change=True)
             except Exception:
                 pass
+        log_wandb_run_id(out_dir, wandb.run.id)
     except comm_exception as err:
         print(f"wandb.init failed ({err}); disabling wandb logging.")
         wandb_log = False
