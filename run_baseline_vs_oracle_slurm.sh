@@ -13,8 +13,6 @@ NPROC_PER_NODE=8
 slurm_cluster=gpu-a10
 slurm_partition=a10x8-192c768m #a10
 
-MAX_ITERS=20000
-
 # Parse command-line arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -60,20 +58,21 @@ else
     TRAIN_CMD="python train.py"
 fi
 
-# TODO: add argument in script to resume
+MAX_ITERS=20000
+# TODO: add argument in script to resume (with options "must", "allow", "never")
 # TODO: deduce WANDB_RUN_ID from out_dir
-RESUME_ARGS="--init_from=resume --wandb_resume=allow --wandb_run_id=$WANDB_RUN_ID"
-LEARNING_RATE_ARGS="--learning_rate=6e-5 --min_lr=6e-6 --lr_decay_iters=$MAX_ITERS"
+# RESUME_ARGS="--init_from=resume --wandb_resume=allow --wandb_run_id=$WANDB_RUN_ID"
+LEARNING_RATE_ARGS="--lr_decay_iters=2000" # "--lr_decay_iters=$MAX_ITERS --learning_rate=6e-5 --min_lr=6e-6"
 
 # --- Base Experiments ---
 # TODO: if resume, get wandb_run_id and wandb_resume
 # Experiment 1: Baseline
 echo "Running experiment 1: Baseline"
-EXP1_NAME="baseline-steps${MAX_ITERS}-halflr"
+EXP1_NAME="gpt2-small-baseline-steps${MAX_ITERS}-wronglrdecay"
 EXP1_DIR=logs/$EXP1_NAME
 mkdir -p $EXP1_DIR
-# bash_cmd="nvidia-smi; $TRAIN_CMD $CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP1_NAME --out_dir=$EXP1_DIR --compile=False --batch_size=8 --gradient_accumulation_steps=10 --log_correlation=True"
-# cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP1_NAME} -o ${EXP1_DIR}/slurm-%j.out --time 24:00:00 --wckey sparse_scaling_law --gres=gpu:8 --nodes=1 --tasks-per-node=8 --exclusive" -e "${bash_cmd}"
+bash_cmd="nvidia-smi; $TRAIN_CMD $CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_ARGS --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP1_NAME --out_dir=$EXP1_DIR --compile=False --batch_size=5 --gradient_accumulation_steps=32 --log_correlation=True"
+cbrun srund -t ${slurm_cluster} -x "-p ${slurm_partition} -c 4 -J ${EXP1_NAME} -o ${EXP1_DIR}/slurm-%j.out --time 24:00:00 --wckey sparse_scaling_law --gres=gpu:8 --nodes=1 --tasks-per-node=8 --exclusive" -e "${bash_cmd}"
 # TODO: Add inside a script? Then add a slurm wrapper script? Or just add cmd to README.md
 # echo "Sampling from experiment 1"
 # python sample.py --out_dir=$EXP1_DIR > $EXP1_DIR/samples.txt
@@ -81,23 +80,19 @@ mkdir -p $EXP1_DIR
 
 # TODO: unify base args for baseline and recurrent?
 # Base for this section: Recurrent Shared Weights
-BASE_RECURRENT_ARGS="$CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_ARGS --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=8 --gradient_accumulation_steps=10 --log_correlation=True --recurrent_depth_peak=32"
-
-
-
-
-
+BASE_RECURRENT_ARGS="$CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_ARGS --share_parameters_across_layers=True --recurrent_shared_weights=True --compile=False --batch_size=4 --gradient_accumulation_steps=40 --log_correlation=True"
 
 # --- Oracle Stopping Experiments ---
-
-BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1 --recurrent_depth_schedule_min_depth=12 --recurrent_depth_peak=24"
-WANDB_RUN_ID="v34t2hez"
-RESUME_ARGS="--init_from=resume --wandb_resume=must --wandb_run_id=$WANDB_RUN_ID"
+MIN_DEPTH=10
+MAX_DEPTH=22
+BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1 --recurrent_depth_schedule_min_depth=${MIN_DEPTH} --recurrent_depth_peak=${MAX_DEPTH}"
+# WANDB_RUN_ID=""
+# RESUME_ARGS="--init_from=resume --wandb_resume=must --wandb_run_id=$WANDB_RUN_ID"
 
 
 # Experiment 2: Oracle Stopping (Tokenwise)
 echo "Running experiment 2: Oracle Stopping (Tokenwise)"
-EXP34_NAME="oracle-stopping-tokenwise-fixed-edge-noise-predlude-injection-concat-steps${MAX_ITERS}-smalllr-mindepth12"
+EXP34_NAME="gpt2-small-recurrent-${MIN_DEPTH}-${MAX_DEPTH}-steps${MAX_ITERS}-wronglrdecay"
 EXP34_DIR=logs/$EXP34_NAME
 mkdir -p $EXP34_DIR
 bash_cmd="nvidia-smi; $TRAIN_CMD $BASE_ORACLE_ARGS $RESUME_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP34_NAME --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --out_dir=$EXP34_DIR"
