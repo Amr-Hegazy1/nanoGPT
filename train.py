@@ -1160,7 +1160,6 @@ while True:
                 "train/ce_loss": getattr(raw_model, 'ce_loss', None),
                 "train/total_loss": getattr(raw_model, 'total_loss', None),
                 "train/loss_step": lossf,
-                "time": dt,
             })
 
         if tensorboard_log:
