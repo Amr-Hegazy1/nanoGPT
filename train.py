@@ -915,14 +915,6 @@ while True:
 
     # TODO: Should we move this till after training completes?
     if iter_num % log_interval == 0 and master_process:
-        log_dict.update({
-            "iter": iter_num,
-            "lr": lr,
-            "mfu": running_mfu*100, # convert to percentage
-            "train/ce_loss": getattr(raw_model, 'ce_loss', None),
-            "train/total_loss": getattr(raw_model, 'total_loss', None)
-        })
-
         if len(sampled_depths) > 0:
             log_dict["train/sampled_depth_distribution"] = wandb.Histogram(sampled_depths)
             sampled_depths = []
@@ -1153,12 +1145,20 @@ while True:
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-        # FIXME: We have some logging happening before the training step and some after.
+        # NOTE: At the beginning of iteration, if iter_num is a multiple of eval_interval, the train set and
+        # val are evaluated. Some metrics are logged there too.
+        #
+        # Then, we do a forward pass on a batch (with micro steps if gradient accumulation if enabled) before calculating loss. 
+        # If iter_num is a multiple of log_interval, then other metrics are logged too.
+        # TODO: Figure out what needs to be logged when evaluating train/val datasets, and what needs to be logged after each step.
         # TODO: Merge or unify the code that logs to wandb and tensorboard?
         if wandb_log:
-            # NOTE: We have the code above to log 'lr' and 'mfu' above to wandb
             wandb.log({
                 "iter": iter_num,
+                "lr": lr,
+                "mfu": running_mfu*100, # convert to percentage
+                "train/ce_loss": getattr(raw_model, 'ce_loss', None),
+                "train/total_loss": getattr(raw_model, 'total_loss', None),
                 "train/loss_step": lossf,
                 "time": dt,
             })
