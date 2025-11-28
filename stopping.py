@@ -754,11 +754,12 @@ class LearnedStoppingStrategy(StoppingStrategy):
             "depth_delta": depth_delta.detach().item(),
             "controller_active": 1.0 if controller_active else 0.0,
             "depth_histogram": depth_stats["depth_histogram"],
-            "actual_mean_depth": actual_depth_stats["mean_depth"],
-            "actual_min_depth": actual_depth_stats["min_depth"],
-            "actual_max_depth": actual_depth_stats["max_depth"],
-            "actual_std_depth": actual_depth_stats["std_depth"],
-            "actual_depth_histogram": actual_depth_stats["depth_histogram"],
+            # TODO: Commenting for now as we got a runtime error saying `actual_depth_stats` not defined
+            # "actual_mean_depth": actual_depth_stats["mean_depth"],
+            # "actual_min_depth": actual_depth_stats["min_depth"],
+            # "actual_max_depth": actual_depth_stats["max_depth"],
+            # "actual_std_depth": actual_depth_stats["std_depth"],
+            # "actual_depth_histogram": actual_depth_stats["depth_histogram"],
         }
         model.stopping_metrics = metrics
 

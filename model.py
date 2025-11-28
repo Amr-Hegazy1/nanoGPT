@@ -454,6 +454,8 @@ class GPT(nn.Module):
         self.config = config
 
         self.bp_truncate_depth = max(0, int(getattr(config, 'bp_truncate_depth', 0) or 0))
+        self.ce_loss = None
+        self.total_loss = None
 
         # new attributes for experiments
         self.sticky_dropout = config.sticky_dropout
@@ -853,8 +855,10 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            self.ce_loss = loss.item()
             if (self.learned_stopping or self.attentive_stopping) and self.training:
                 loss = loss + aux_loss.to(loss.dtype)
+            self.total_loss = loss.item()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
