@@ -385,6 +385,7 @@ class GPTConfig:
     oracle_max_depth: Optional[int] = None
     oracle_stop_weight: float = 1.0
     oracle_difficulty_weight: float = 1.0
+    oracle_stop_backward: bool = False
     oracle_temperature: float = 1.0
     oracle_min_prob: float = 1e-4
     oracle_use_threshold: bool = False
@@ -476,6 +477,7 @@ class GPT(nn.Module):
         self.oracle_max_depth = getattr(config, 'oracle_max_depth', None)
         self.oracle_stop_weight = getattr(config, 'oracle_stop_weight', 1.0)
         self.oracle_difficulty_weight = getattr(config, 'oracle_difficulty_weight', 1.0)
+        self.oracle_stop_backward = bool(getattr(config, 'oracle_stop_backward', False))
         self.oracle_temperature = getattr(config, 'oracle_temperature', 1.0)
         self.oracle_min_prob = getattr(config, 'oracle_min_prob', 1e-4)
         self.oracle_use_threshold = getattr(config, 'oracle_use_threshold', False)
@@ -856,7 +858,12 @@ class GPT(nn.Module):
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             self.ce_loss = loss.item()
-            if (self.learned_stopping or self.attentive_stopping) and self.training:
+            aux_backward_enabled = self.training and (
+                self.learned_stopping
+                or self.attentive_stopping
+                or (self.oracle_stopping and self.oracle_stop_backward)
+            )
+            if aux_backward_enabled:
                 loss = loss + aux_loss.to(loss.dtype)
             self.total_loss = loss.item()
         else:

@@ -106,6 +106,7 @@ oracle_update_interval = 1000
 oracle_max_depth = None
 oracle_stop_weight = 1.0
 oracle_difficulty_weight = 1.0
+oracle_stop_backward = False
 oracle_temperature = 1.0
 oracle_min_prob = 1e-4
 oracle_use_threshold = False
@@ -450,6 +451,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   oracle_max_depth=oracle_max_depth,
                   oracle_stop_weight=oracle_stop_weight,
                   oracle_difficulty_weight=oracle_difficulty_weight,
+                  oracle_stop_backward=oracle_stop_backward,
                   oracle_temperature=oracle_temperature,
                   oracle_min_prob=oracle_min_prob,
                   oracle_use_threshold=oracle_use_threshold,
@@ -571,6 +573,8 @@ elif init_from == 'resume':
         model_args['oracle_stop_weight'] = checkpoint_model_args['oracle_stop_weight']
     if 'oracle_difficulty_weight' in checkpoint_model_args:
         model_args['oracle_difficulty_weight'] = checkpoint_model_args['oracle_difficulty_weight']
+    if 'oracle_stop_backward' in checkpoint_model_args:
+        model_args['oracle_stop_backward'] = checkpoint_model_args['oracle_stop_backward']
     if 'oracle_temperature' in checkpoint_model_args:
         model_args['oracle_temperature'] = checkpoint_model_args['oracle_temperature']
     if 'oracle_min_prob' in checkpoint_model_args:
@@ -685,6 +689,7 @@ elif init_from.startswith('gpt2'):
     model_args['oracle_max_depth'] = getattr(model.config, 'oracle_max_depth', None)
     model_args['oracle_stop_weight'] = getattr(model.config, 'oracle_stop_weight', 1.0)
     model_args['oracle_difficulty_weight'] = getattr(model.config, 'oracle_difficulty_weight', 1.0)
+    model_args['oracle_stop_backward'] = getattr(model.config, 'oracle_stop_backward', False)
     model_args['oracle_temperature'] = getattr(model.config, 'oracle_temperature', 1.0)
     model_args['oracle_min_prob'] = getattr(model.config, 'oracle_min_prob', 1e-4)
     model_args['oracle_use_threshold'] = getattr(model.config, 'oracle_use_threshold', False)
