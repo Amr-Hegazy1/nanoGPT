@@ -62,7 +62,9 @@ MAX_ITERS=20000
 # TODO: add argument in script to resume (with options "must", "allow", "never")
 # TODO: deduce WANDB_RUN_ID from out_dir
 # RESUME_ARGS="--init_from=resume --wandb_resume=allow --wandb_run_id=$WANDB_RUN_ID"
-LEARNING_RATE_ARGS="--lr_decay_iters=2000" # "--lr_decay_iters=$MAX_ITERS --learning_rate=6e-5 --min_lr=6e-6"
+# LEARNING_RATE_ARGS="--lr_decay_iters=2000"
+LEARNING_RATE_ARGS="--lr_decay_iters=$MAX_ITERS"
+# LEARNING_RATE_ARGS="--lr_decay_iters=$MAX_ITERS --learning_rate=6e-5 --min_lr=6e-6"
 
 # --- Base Experiments ---
 # TODO: if resume, get wandb_run_id and wandb_resume
@@ -77,8 +79,8 @@ bash_cmd="nvidia-smi; $TRAIN_CMD $CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_A
 # echo "Sampling from experiment 1"
 # python sample.py --out_dir=$EXP1_DIR > $EXP1_DIR/samples.txt
 
-MIN_DEPTH=12
-MAX_DEPTH=24
+MIN_DEPTH=10
+MAX_DEPTH=22
 
 # TODO: unify base args for baseline and recurrent?
 # Base for this section: Recurrent Shared Weights
@@ -86,6 +88,7 @@ BASE_RECURRENT_ARGS="$CONFIG --max_iters=$MAX_ITERS $LEARNING_RATE_ARGS --share_
 
 # --- Oracle Stopping Experiments ---
 BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1"
+# BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_stop_backward=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1"
 # BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --learned_stopping=True"
 # WANDB_RUN_ID=""
 # RESUME_ARGS="--init_from=resume --wandb_resume=must --wandb_run_id=$WANDB_RUN_ID"
@@ -93,7 +96,7 @@ BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_in
 
 # Experiment 2: Oracle Stopping (Tokenwise)
 echo "Running experiment 2: Oracle Stopping (Tokenwise)"
-EXP34_NAME="recurrent-${MIN_DEPTH}-${MAX_DEPTH}-steps${MAX_ITERS}-oracle-wronglrdecay"
+EXP34_NAME="2025-11-29-oracle-${MIN_DEPTH}-${MAX_DEPTH}"
 EXP34_DIR=logs/$EXP34_NAME
 mkdir -p $EXP34_DIR
 bash_cmd="nvidia-smi; $TRAIN_CMD $BASE_ORACLE_ARGS $RESUME_ARGS --stopping_tokenwise=True --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$EXP34_NAME --recurrent_prelude_injection=True --recurrent_prelude_injection_mode=concat --fixed_edge_blocks=True --recurrent_noise_mode=add --recurrent_noise_std=0.1 --out_dir=$EXP34_DIR"
