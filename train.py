@@ -101,6 +101,7 @@ hard_attentive_stopping_threshold = 0.5
 stop_use_cumsum_pooling = False
 stop_disable_pooled_features = False
 oracle_stopping = False
+oracle_dummy = False
 oracle_bootstrap_checkpoint = ''
 oracle_update_interval = 1000
 oracle_max_depth = None
@@ -446,6 +447,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   learned_stopping_use_threshold=learned_stopping_use_threshold,
                   learned_stopping_threshold=learned_stopping_threshold,
                   oracle_stopping=oracle_stopping,
+                  oracle_dummy=oracle_dummy,
                   oracle_bootstrap_checkpoint=oracle_bootstrap_checkpoint,
                   oracle_update_interval=oracle_update_interval,
                   oracle_max_depth=oracle_max_depth,
@@ -563,6 +565,8 @@ elif init_from == 'resume':
         model_args['learned_stopping_threshold'] = checkpoint_model_args['learned_stopping_threshold']
     if 'oracle_stopping' in checkpoint_model_args:
         model_args['oracle_stopping'] = checkpoint_model_args['oracle_stopping']
+    if 'oracle_dummy' in checkpoint_model_args:
+        model_args['oracle_dummy'] = checkpoint_model_args['oracle_dummy']
     if 'oracle_bootstrap_checkpoint' in checkpoint_model_args:
         model_args['oracle_bootstrap_checkpoint'] = checkpoint_model_args['oracle_bootstrap_checkpoint']
     if 'oracle_update_interval' in checkpoint_model_args:
@@ -684,6 +688,7 @@ elif init_from.startswith('gpt2'):
     model_args['learned_stopping_use_threshold'] = getattr(model.config, 'learned_stopping_use_threshold', False)
     model_args['learned_stopping_threshold'] = getattr(model.config, 'learned_stopping_threshold', 0.5)
     model_args['oracle_stopping'] = getattr(model.config, 'oracle_stopping', False)
+    model_args['oracle_dummy'] = getattr(model.config, 'oracle_dummy', False)
     model_args['oracle_bootstrap_checkpoint'] = getattr(model.config, 'oracle_bootstrap_checkpoint', '')
     model_args['oracle_update_interval'] = getattr(model.config, 'oracle_update_interval', 1000)
     model_args['oracle_max_depth'] = getattr(model.config, 'oracle_max_depth', None)
