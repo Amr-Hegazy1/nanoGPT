@@ -99,7 +99,7 @@ attentive_stopping_threshold = 0.5
 hard_attentive_stopping = False
 hard_attentive_stopping_threshold = 0.5
 stop_use_cumsum_pooling = False
-stop_disable_pooled_features = False
+stop_disable_pooled_features = True
 oracle_stopping = False
 oracle_bootstrap_checkpoint = ''
 oracle_update_interval = 1000
@@ -757,9 +757,23 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
+            B, T = X.shape
+            
             with ctx:
                 n = recurrent_depth if recurrent_shared_weights else None
+                torch.manual_seed(0)
                 logits, loss, _ = model(X, Y, n=n)
+                zeros = torch.zeros_like(X[:, T//2:])
+                X[:, T//2:] = zeros
+                Y[:, T//2:] = zeros
+
+                torch.manual_seed(0)
+                logits_half,_, _ = model(X, Y, n=n)
+                # print(f"X Shape: {X.shape}, Y Shape: {Y.shape}, Logits Shape: {logits.shape}, Logits_Half Shape: {logits_half.shape}")
+                # print(f"Logits First Half: {logits[:, :T//2]}")
+                # print(f"Logits_Half First Half: {logits_half[:, :T//2]}")
+                assert torch.allclose(logits[:, :T//2], logits_half[:, :T//2])
+                # print("Passed")
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
