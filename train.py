@@ -32,6 +32,8 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
+import wandb
+
 from model import GPTConfig, GPT
 from curriculum import determine_recurrent_depth, parse_schedule_options
 from utils import log_config, log_command, log_code_status, log_wandb_run_id
@@ -821,8 +823,6 @@ def get_mean_grad_norm(model):
 
 # logging
 if wandb_log and master_process:
-    import wandb
-
     init_kwargs = {
         "project": wandb_project,
         "name": wandb_run_name,
