@@ -32,8 +32,11 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
+import wandb
+
 from model import GPTConfig, GPT
 from curriculum import determine_recurrent_depth, parse_schedule_options
+from utils import log_config, log_command, log_code_status, log_wandb_run_id
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -100,11 +103,13 @@ hard_attentive_stopping_threshold = 0.5
 stop_use_cumsum_pooling = False
 stop_disable_pooled_features = False
 oracle_stopping = False
+oracle_dummy = False
 oracle_bootstrap_checkpoint = ''
 oracle_update_interval = 1000
 oracle_max_depth = None
 oracle_stop_weight = 1.0
 oracle_difficulty_weight = 1.0
+oracle_stop_backward = False
 oracle_temperature = 1.0
 oracle_min_prob = 1e-4
 oracle_use_threshold = False
@@ -186,6 +191,8 @@ for optional_key in ['learned_stopping_target_depth', 'attentive_stopping_target
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
+assert eval_interval % log_interval == 0, "eval_interval must be a multiple of log_interval"
 
 # Hyperparameter tuning via local random search
 if hyperparameter_tuning:
@@ -353,6 +360,9 @@ if master_process:
     if tensorboard_log:
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(log_dir=out_dir)
+    log_config(config, out_dir)
+    log_command(out_dir)
+    log_code_status(out_dir)
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -439,11 +449,13 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   learned_stopping_use_threshold=learned_stopping_use_threshold,
                   learned_stopping_threshold=learned_stopping_threshold,
                   oracle_stopping=oracle_stopping,
+                  oracle_dummy=oracle_dummy,
                   oracle_bootstrap_checkpoint=oracle_bootstrap_checkpoint,
                   oracle_update_interval=oracle_update_interval,
                   oracle_max_depth=oracle_max_depth,
                   oracle_stop_weight=oracle_stop_weight,
                   oracle_difficulty_weight=oracle_difficulty_weight,
+                  oracle_stop_backward=oracle_stop_backward,
                   oracle_temperature=oracle_temperature,
                   oracle_min_prob=oracle_min_prob,
                   oracle_use_threshold=oracle_use_threshold,
@@ -555,6 +567,8 @@ elif init_from == 'resume':
         model_args['learned_stopping_threshold'] = checkpoint_model_args['learned_stopping_threshold']
     if 'oracle_stopping' in checkpoint_model_args:
         model_args['oracle_stopping'] = checkpoint_model_args['oracle_stopping']
+    if 'oracle_dummy' in checkpoint_model_args:
+        model_args['oracle_dummy'] = checkpoint_model_args['oracle_dummy']
     if 'oracle_bootstrap_checkpoint' in checkpoint_model_args:
         model_args['oracle_bootstrap_checkpoint'] = checkpoint_model_args['oracle_bootstrap_checkpoint']
     if 'oracle_update_interval' in checkpoint_model_args:
@@ -565,6 +579,8 @@ elif init_from == 'resume':
         model_args['oracle_stop_weight'] = checkpoint_model_args['oracle_stop_weight']
     if 'oracle_difficulty_weight' in checkpoint_model_args:
         model_args['oracle_difficulty_weight'] = checkpoint_model_args['oracle_difficulty_weight']
+    if 'oracle_stop_backward' in checkpoint_model_args:
+        model_args['oracle_stop_backward'] = checkpoint_model_args['oracle_stop_backward']
     if 'oracle_temperature' in checkpoint_model_args:
         model_args['oracle_temperature'] = checkpoint_model_args['oracle_temperature']
     if 'oracle_min_prob' in checkpoint_model_args:
@@ -674,11 +690,13 @@ elif init_from.startswith('gpt2'):
     model_args['learned_stopping_use_threshold'] = getattr(model.config, 'learned_stopping_use_threshold', False)
     model_args['learned_stopping_threshold'] = getattr(model.config, 'learned_stopping_threshold', 0.5)
     model_args['oracle_stopping'] = getattr(model.config, 'oracle_stopping', False)
+    model_args['oracle_dummy'] = getattr(model.config, 'oracle_dummy', False)
     model_args['oracle_bootstrap_checkpoint'] = getattr(model.config, 'oracle_bootstrap_checkpoint', '')
     model_args['oracle_update_interval'] = getattr(model.config, 'oracle_update_interval', 1000)
     model_args['oracle_max_depth'] = getattr(model.config, 'oracle_max_depth', None)
     model_args['oracle_stop_weight'] = getattr(model.config, 'oracle_stop_weight', 1.0)
     model_args['oracle_difficulty_weight'] = getattr(model.config, 'oracle_difficulty_weight', 1.0)
+    model_args['oracle_stop_backward'] = getattr(model.config, 'oracle_stop_backward', False)
     model_args['oracle_temperature'] = getattr(model.config, 'oracle_temperature', 1.0)
     model_args['oracle_min_prob'] = getattr(model.config, 'oracle_min_prob', 1e-4)
     model_args['oracle_use_threshold'] = getattr(model.config, 'oracle_use_threshold', False)
@@ -805,8 +823,6 @@ def get_mean_grad_norm(model):
 
 # logging
 if wandb_log and master_process:
-    import wandb
-
     init_kwargs = {
         "project": wandb_project,
         "name": wandb_run_name,
@@ -835,6 +851,7 @@ if wandb_log and master_process:
                 wandb.config.update(config, allow_val_change=True)
             except Exception:
                 pass
+        log_wandb_run_id(out_dir, wandb.run.id)
     except comm_exception as err:
         print(f"wandb.init failed ({err}); disabling wandb logging.")
         wandb_log = False
@@ -861,125 +878,36 @@ while True:
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+    log_dict = {"iter": iter_num}
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses, val_logits = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        if wandb_log:
-            log_dict = {
-                "iter": iter_num,
-                "train/loss": losses['train'],
-                "val/loss": losses['val'],
-                "val/perplexity": torch.exp(losses['val']),
-                "lr": lr,
-                "mfu": running_mfu*100, # convert to percentage
-            }
-            if len(sampled_depths) > 0:
-                log_dict["train/sampled_depth_distribution"] = wandb.Histogram(sampled_depths)
-                sampled_depths = []
-            if curriculum_feedback_metric is not None:
-                log_dict["train/curriculum_feedback"] = curriculum_feedback_metric
-            if curriculum_difficulty_score is not None:
-                log_dict["train/curriculum_difficulty"] = curriculum_difficulty_score
-            # Add stopping metrics if they exist
-            stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
-            stopping_mean_depth_logged = False
-            if stopping_metrics:
-                for k, v in stopping_metrics.items():
-                    key = f"train/stopping/{k}"
-                    if isinstance(v, torch.Tensor):
-                        if v.numel() == 1:
-                            log_dict[key] = v.item()
-                        else:
-                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
-                    else:
-                        log_dict[key] = v
-                    if k == "mean_depth":
-                        stopping_mean_depth_logged = True
-                if not stopping_mean_depth_logged and last_mean_depth is not None:
-                    log_dict["train/stopping/mean_depth"] = last_mean_depth
-            
-            attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
-            attentive_mean_depth_logged = False
-            if attentive_stopping_metrics:
-                for k, v in attentive_stopping_metrics.items():
-                    key = f"train/attentive_stopping/{k}"
-                    if isinstance(v, torch.Tensor):
-                        if v.numel() == 1:
-                            log_dict[key] = v.item()
-                        else:
-                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
-                    else:
-                        log_dict[key] = v
-                    if k == "mean_depth":
-                        attentive_mean_depth_logged = True
-                if not attentive_mean_depth_logged and last_mean_depth is not None:
-                    log_dict["train/attentive_stopping/mean_depth"] = last_mean_depth
-            hard_attentive_metrics = getattr(raw_model, 'hard_attentive_stopping_metrics', None)
-            hard_attentive_mean_depth_logged = False
-            if hard_attentive_metrics:
-                for k, v in hard_attentive_metrics.items():
-                    key = f"train/hard_attentive_stopping/{k}"
-                    if isinstance(v, torch.Tensor):
-                        if v.numel() == 1:
-                            log_dict[key] = v.item()
-                        else:
-                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
-                    else:
-                        log_dict[key] = v
-                    if k == "mean_depth":
-                        hard_attentive_mean_depth_logged = True
-                if not hard_attentive_mean_depth_logged and last_mean_depth is not None:
-                    log_dict["train/hard_attentive_stopping/mean_depth"] = last_mean_depth
 
-            oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
-            if oracle_metrics:
-                for k, v in oracle_metrics.items():
-                    key = f"train/oracle/{k}"
-                    if isinstance(v, torch.Tensor):
-                        if v.numel() == 1:
-                            log_dict[key] = v.item()
-                        else:
-                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
-                    else:
-                        log_dict[key] = v
+        log_dict.update({
+            "train/loss": losses['train'],
+            "val/loss": losses['val'],
+            "val/perplexity": torch.exp(losses['val']),
+        })
 
-            oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
-            if oracle_metrics:
-                for k, v in oracle_metrics.items():
-                    key = f"train/oracle/{k}"
-                    if isinstance(v, torch.Tensor):
-                        if v.numel() == 1:
-                            log_dict[key] = v.item()
-                        else:
-                            log_dict[key] = wandb.Histogram(v.cpu().numpy())
-                    else:
-                        log_dict[key] = v
+        if log_correlation:
+            # calculate token embedding correlation
+            x_c = val_logits - val_logits.mean(dim=-1, keepdim=True)
+            normed_x = x_c / x_c.norm(dim=-1, keepdim=True)
+            token_corr = (normed_x @ normed_x.transpose(-2, -1)).mean()
+            log_dict['val/token_correlation'] = token_corr.item()
 
-            if log_correlation:
-                # calculate token embedding correlation
-                x_c = val_logits - val_logits.mean(dim=-1, keepdim=True)
-                normed_x = x_c / x_c.norm(dim=-1, keepdim=True)
-                token_corr = (normed_x @ normed_x.transpose(-2, -1)).mean()
-                log_dict['val/token_correlation'] = token_corr.item()
+            # calculate batch correlation
+            # Reshape the logits tensor to 2D
+            logits_2d = val_logits.view(-1, val_logits.size(-1))
+            # Calculate the correlation matrix
+            corr_matrix = torch.corrcoef(logits_2d)
+            # Extract the upper triangular part of the matrix, excluding the diagonal
+            upper_tri = torch.triu(corr_matrix, diagonal=1)
+            # Calculate the mean of the correlations
+            mean_corr = upper_tri.sum() / (upper_tri.numel() - val_logits.size(0))
+            log_dict['val/batch_correlation'] = mean_corr.item()
 
-                # calculate batch correlation
-                # Reshape the logits tensor to 2D
-                logits_2d = val_logits.view(-1, val_logits.size(-1))
-                # Calculate the correlation matrix
-                corr_matrix = torch.corrcoef(logits_2d)
-                # Extract the upper triangular part of the matrix, excluding the diagonal
-                upper_tri = torch.triu(corr_matrix, diagonal=1)
-                # Calculate the mean of the correlations
-                mean_corr = upper_tri.sum() / (upper_tri.numel() - val_logits.size(0))
-                log_dict['val/batch_correlation'] = mean_corr.item()
-
-            wandb.log(log_dict)
-        if tensorboard_log and master_process:
-            writer.add_scalar('train/loss', losses['train'], iter_num)
-            writer.add_scalar('val/loss', losses['val'], iter_num)
-            writer.add_scalar('lr', lr, iter_num)
-            writer.add_scalar('mfu', running_mfu*100, iter_num)
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -994,6 +922,100 @@ while True:
                 }
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+
+    # TODO: Should we move this till after training completes?
+    if iter_num % log_interval == 0 and master_process:
+        if len(sampled_depths) > 0:
+            log_dict["train/sampled_depth_distribution"] = wandb.Histogram(sampled_depths)
+            sampled_depths = []
+        if curriculum_feedback_metric is not None:
+            log_dict["train/curriculum_feedback"] = curriculum_feedback_metric
+        if curriculum_difficulty_score is not None:
+            log_dict["train/curriculum_difficulty"] = curriculum_difficulty_score
+        # Add stopping metrics if they exist
+        stopping_metrics = getattr(raw_model, 'stopping_metrics', None)
+        stopping_mean_depth_logged = False
+        if stopping_metrics:
+            for k, v in stopping_metrics.items():
+                key = f"train/stopping/{k}"
+                if isinstance(v, torch.Tensor):
+                    if v.numel() == 1:
+                        log_dict[key] = v.item()
+                    else:
+                        log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                else:
+                    log_dict[key] = v
+                if k == "mean_depth":
+                    stopping_mean_depth_logged = True
+            if not stopping_mean_depth_logged and last_mean_depth is not None:
+                log_dict["train/stopping/mean_depth"] = last_mean_depth
+        
+        attentive_stopping_metrics = getattr(raw_model, 'attentive_stopping_metrics', None)
+        attentive_mean_depth_logged = False
+        if attentive_stopping_metrics:
+            for k, v in attentive_stopping_metrics.items():
+                key = f"train/attentive_stopping/{k}"
+                if isinstance(v, torch.Tensor):
+                    if v.numel() == 1:
+                        log_dict[key] = v.item()
+                    else:
+                        log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                else:
+                    log_dict[key] = v
+                if k == "mean_depth":
+                    attentive_mean_depth_logged = True
+            if not attentive_mean_depth_logged and last_mean_depth is not None:
+                log_dict["train/attentive_stopping/mean_depth"] = last_mean_depth
+        hard_attentive_metrics = getattr(raw_model, 'hard_attentive_stopping_metrics', None)
+        hard_attentive_mean_depth_logged = False
+        if hard_attentive_metrics:
+            for k, v in hard_attentive_metrics.items():
+                key = f"train/hard_attentive_stopping/{k}"
+                if isinstance(v, torch.Tensor):
+                    if v.numel() == 1:
+                        log_dict[key] = v.item()
+                    else:
+                        log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                else:
+                    log_dict[key] = v
+                if k == "mean_depth":
+                    hard_attentive_mean_depth_logged = True
+            if not hard_attentive_mean_depth_logged and last_mean_depth is not None:
+                log_dict["train/hard_attentive_stopping/mean_depth"] = last_mean_depth
+
+        oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
+        if oracle_metrics:
+            for k, v in oracle_metrics.items():
+                key = f"train/oracle/{k}"
+                if isinstance(v, torch.Tensor):
+                    if v.numel() == 1:
+                        log_dict[key] = v.item()
+                    else:
+                        log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                else:
+                    log_dict[key] = v
+
+        oracle_metrics = getattr(raw_model, 'oracle_metrics', None)
+        if oracle_metrics:
+            for k, v in oracle_metrics.items():
+                key = f"train/oracle/{k}"
+                if isinstance(v, torch.Tensor):
+                    if v.numel() == 1:
+                        log_dict[key] = v.item()
+                    else:
+                        log_dict[key] = wandb.Histogram(v.cpu().numpy())
+                else:
+                    log_dict[key] = v
+
+        if wandb_log:
+            wandb.log(log_dict)
+
+        if tensorboard_log and master_process:
+            writer.add_scalar('train/loss', losses['train'], iter_num)
+            writer.add_scalar('val/loss', losses['val'], iter_num)
+            writer.add_scalar('lr', lr, iter_num)
+            writer.add_scalar('mfu', running_mfu*100, iter_num)
+
     if iter_num == 0 and eval_only:
         break
 
@@ -1058,7 +1080,7 @@ while True:
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
-    should_log_norms = master_process and (iter_num % eval_interval == 0)
+    should_log_norms = master_process and (iter_num % log_interval == 0)
     student_grad_norm = None
     student_weight_norm = None
     teacher_weight_norm = None
@@ -1133,7 +1155,22 @@ while True:
             running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
 
-        
+        # NOTE: At the beginning of iteration, if iter_num is a multiple of eval_interval, the train set and
+        # val are evaluated. Some metrics are logged there too.
+        #
+        # Then, we do a forward pass on a batch (with micro steps if gradient accumulation if enabled) before calculating loss. 
+        # If iter_num is a multiple of log_interval, then other metrics are logged too.
+        # TODO: Figure out what needs to be logged when evaluating train/val datasets, and what needs to be logged after each step.
+        # TODO: Merge or unify the code that logs to wandb and tensorboard?
+        if wandb_log:
+            wandb.log({
+                "iter": iter_num,
+                "lr": lr,
+                "mfu": running_mfu*100, # convert to percentage
+                "train/ce_loss": getattr(raw_model, 'ce_loss', None),
+                "train/total_loss": getattr(raw_model, 'total_loss', None),
+                "train/loss_step": lossf,
+            })
 
         if tensorboard_log:
             writer.add_scalar('train/loss', lossf, iter_num)

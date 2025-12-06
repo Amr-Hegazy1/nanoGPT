@@ -380,11 +380,13 @@ class GPTConfig:
     learned_stopping_use_threshold: bool = False
     learned_stopping_threshold: float = 0.5
     oracle_stopping: bool = False
+    oracle_dummy: bool = False
     oracle_bootstrap_checkpoint: Optional[str] = None
     oracle_update_interval: int = 1000
     oracle_max_depth: Optional[int] = None
     oracle_stop_weight: float = 1.0
     oracle_difficulty_weight: float = 1.0
+    oracle_stop_backward: bool = False
     oracle_temperature: float = 1.0
     oracle_min_prob: float = 1e-4
     oracle_use_threshold: bool = False
@@ -454,6 +456,8 @@ class GPT(nn.Module):
         self.config = config
 
         self.bp_truncate_depth = max(0, int(getattr(config, 'bp_truncate_depth', 0) or 0))
+        self.ce_loss = None
+        self.total_loss = None
 
         # new attributes for experiments
         self.sticky_dropout = config.sticky_dropout
@@ -469,11 +473,13 @@ class GPT(nn.Module):
         self.learned_stopping_threshold = config.learned_stopping_threshold
 
         self.oracle_stopping = bool(getattr(config, 'oracle_stopping', False))
+        self.oracle_dummy = bool(getattr(config, 'oracle_dummy', False))
         self.oracle_bootstrap_checkpoint = getattr(config, 'oracle_bootstrap_checkpoint', None) or None
         self.oracle_update_interval = int(getattr(config, 'oracle_update_interval', 0) or 0)
         self.oracle_max_depth = getattr(config, 'oracle_max_depth', None)
         self.oracle_stop_weight = getattr(config, 'oracle_stop_weight', 1.0)
         self.oracle_difficulty_weight = getattr(config, 'oracle_difficulty_weight', 1.0)
+        self.oracle_stop_backward = bool(getattr(config, 'oracle_stop_backward', False))
         self.oracle_temperature = getattr(config, 'oracle_temperature', 1.0)
         self.oracle_min_prob = getattr(config, 'oracle_min_prob', 1e-4)
         self.oracle_use_threshold = getattr(config, 'oracle_use_threshold', False)
@@ -823,7 +829,7 @@ class GPT(nn.Module):
                 self._oracle_runtime_temperature = self.oracle_temperature
 
             oracle_annotations = None
-            if self.oracle_stopping and targets is not None:
+            if self.oracle_stopping and not self.oracle_dummy and targets is not None:
                 oracle_annotations = self._get_oracle_teacher(x.device, x.dtype).annotate(
                     idx, targets, num_layers, self.stopping_tokenwise
                 )
@@ -853,8 +859,15 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-            if (self.learned_stopping or self.attentive_stopping) and self.training:
+            self.ce_loss = loss.item()
+            aux_backward_enabled = self.training and (
+                self.learned_stopping
+                or self.attentive_stopping
+                or (self.oracle_stopping and self.oracle_stop_backward)
+            )
+            if aux_backward_enabled:
                 loss = loss + aux_loss.to(loss.dtype)
+            self.total_loss = loss.item()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
