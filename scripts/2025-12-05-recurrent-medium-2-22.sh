@@ -35,7 +35,19 @@ run_job() {
         --wandb_log=True --wandb_project=$WANDB_PROJECT --wandb_run_name=$JOB_NAME \
         --out_dir=${LOG_DIR} \
         --compile=False \
-        --log_correlation=True
+        --log_correlation=True \
+        --share_parameters_across_layers=True \
+        --stopping_tokenwise=True \
+        --recurrent_shared_weights=True \
+        --recurrent_depth_schedule_min_depth=2 \
+        --recurrent_depth_peak=22 \
+        --recurrent_prelude_injection=True \
+        --recurrent_prelude_injection_mode=concat \
+        --fixed_edge_blocks=True \
+        --recurrent_noise_mode=add \
+        --recurrent_noise_std=0.1 \
+        --oracle_stopping=True --oracle_dummy=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1
+
 
     # Sample command to generate text after training
     python sample.py \
