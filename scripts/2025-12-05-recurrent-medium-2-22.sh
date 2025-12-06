@@ -53,6 +53,7 @@ run_job() {
     python sample.py \
         --init_from=resume \
         --out_dir=${LOG_DIR} \
+        --recurrent_depth=22 \
         --start="The capital of Egypt is" \
         --num_samples=1 \
         --max_new_tokens=200 \
@@ -61,6 +62,7 @@ run_job() {
     python sample.py \
         --init_from=resume \
         --out_dir=${LOG_DIR} \
+        --recurrent_depth=22 \
         --start="The capital of Egypt is" \
         --num_samples=1 \
         --max_new_tokens=200 \
@@ -69,6 +71,7 @@ run_job() {
     python sample.py \
         --init_from=resume \
         --out_dir=logs/$JOB_NAME \
+        --recurrent_depth=22 \
         --start="The capital of Egypt is" \
         --num_samples=1 \
         --max_new_tokens=200 \
@@ -83,6 +86,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     SCRIPT_PATH=$(realpath "${BASH_SOURCE[0]:-$0}")
     cbrun srund \
         -t ${slurm_cluster} \
-        -x "-p ${slurm_partition} -c 4 -J ${JOB_NAME} -o ${LOG_DIR}/slurm-%j.out --time 72:00:00 --wckey sparse_scaling_law --gres=gpu:8 --nodes=1 --tasks-per-node=8 --exclusive" \
+        -x "-p ${slurm_partition} -c 4 -J ${JOB_NAME} -o ${LOG_DIR}/slurm-%j.out --time 96:00:00 --wckey sparse_scaling_law --gres=gpu:8 --nodes=1 --tasks-per-node=8 --exclusive" \
         -e "bash -lc 'source ${SCRIPT_PATH} && run_job'"
 fi

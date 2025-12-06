@@ -2,7 +2,8 @@
 #SBATCH --job-name=nanogpt_multinode      # Job name
 #SBATCH --output=logs/2025-12-05-baseline-medium/slurm-%j.out  # Standard output and error log
 #SBATCH --nodes=2                         # Request N nodes
-#SBATCH --ntasks-per-node=8               # Number of processes (GPUs) per node
+#SBATCH --tasks-per-node=8                # Number of processes (GPUs) per node
+#SBATCH --cpus-per-task=4                 # Number of CPU cores per task
 #SBATCH --gres=gpu:8                      # Request N GPUs per node
 #SBATCH --time=04:00:00                   # Time limit hrs:min:sec
 #SBATCH --partition=a10x8-192c768m        # Specify the partition (queue)
