@@ -421,7 +421,7 @@ class GPTConfig:
     attentive_stopping_use_threshold: bool = False
     attentive_stopping_threshold: float = 0.5
     stop_use_cumsum_pooling: bool = False
-    stop_disable_pooled_features: bool = False
+    stop_disable_pooled_features: bool = True
     hard_attentive_stopping: bool = False
     hard_attentive_stopping_threshold: float = 0.5
     sandwich_norm: bool = False
@@ -504,7 +504,7 @@ class GPT(nn.Module):
         self.oracle_metrics = None
         self._oracle_last_update_step = -1
         self.stop_use_cumsum_pooling = bool(getattr(config, "stop_use_cumsum_pooling", False))
-        self.stop_disable_pooled_features = bool(getattr(config, "stop_disable_pooled_features", False))
+        self.stop_disable_pooled_features = bool(getattr(config, "stop_disable_pooled_features", True))
         needs_stop_head = self.learned_stopping or self.attentive_stopping or self.oracle_stopping
         if needs_stop_head:
             pooled_factor = 0 if self.stop_disable_pooled_features else 1
@@ -644,6 +644,7 @@ class GPT(nn.Module):
     def _apply_recurrent_noise(self, x):
         if self.recurrent_noise_std <= 0 or self.recurrent_noise_mode == 'none':
             return x
+        
         if self.recurrent_noise_mode == 'add':
             noise = torch.randn_like(x) * self.recurrent_noise_std
             return x + noise

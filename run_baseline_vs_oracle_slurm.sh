@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ex
+set -e
 
 # Base configuration
 CONFIG="config/train_gpt2.py"
@@ -91,6 +91,7 @@ BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_dummy=Tru
 # BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1"
 # BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --oracle_stopping=True --oracle_stop_backward=True --oracle_update_interval=50 --oracle_stop_weight=0.3 --oracle_difficulty_weight=0.1"
 # BASE_ORACLE_ARGS="$BASE_RECURRENT_ARGS --learned_stopping=True"
+
 # WANDB_RUN_ID=""
 # RESUME_ARGS="--init_from=resume --wandb_resume=must --wandb_run_id=$WANDB_RUN_ID"
 
