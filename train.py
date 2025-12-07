@@ -675,11 +675,11 @@ elif init_from.startswith('gpt2'):
     # read off the created config params, so we can store them into checkpoint correctly
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = getattr(model.config, k)
-model_args['share_parameters_across_layers'] = getattr(model.config, 'share_parameters_across_layers', False)
-model_args['recurrent_shared_weights'] = getattr(model.config, 'recurrent_shared_weights', False)
-model_args['recurrent_depth'] = getattr(model.config, 'recurrent_depth', 32)
-model_args['recurrent_shared_num_blocks'] = getattr(model.config, 'recurrent_shared_num_blocks', 1)
-model_args['bp_truncate_depth'] = getattr(model.config, 'bp_truncate_depth', 0)
+    model_args['share_parameters_across_layers'] = getattr(model.config, 'share_parameters_across_layers', False)
+    model_args['recurrent_shared_weights'] = getattr(model.config, 'recurrent_shared_weights', False)
+    model_args['recurrent_depth'] = getattr(model.config, 'recurrent_depth', 32)
+    model_args['recurrent_shared_num_blocks'] = getattr(model.config, 'recurrent_shared_num_blocks', 1)
+    model_args['bp_truncate_depth'] = getattr(model.config, 'bp_truncate_depth', 0)
     model_args['moe'] = getattr(model.config, 'moe', False)
     model_args['moe_num_experts'] = getattr(model.config, 'moe_num_experts', 4)
     model_args['moe_top_k'] = getattr(model.config, 'moe_top_k', 2)
