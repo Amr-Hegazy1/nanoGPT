@@ -144,6 +144,7 @@ log_correlation = False
 recurrent_depth_peak = 32
 recurrent_prelude_injection = False
 recurrent_prelude_injection_mode = 'add'
+recurrent_prelude_injection_first_block_only = False
 recurrent_noise_mode = 'none'
 recurrent_noise_std = 0.0
 recurrent_noise_concat_dim = None
@@ -490,6 +491,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   recurrent_extra_layernorm=recurrent_extra_layernorm,
                   recurrent_prelude_injection=recurrent_prelude_injection,
                   recurrent_prelude_injection_mode=recurrent_prelude_injection_mode,
+                  recurrent_prelude_injection_first_block_only=recurrent_prelude_injection_first_block_only,
                   attentive_stopping=attentive_stopping,
                   attentive_stopping_warmup_steps=attentive_stopping_warmup_steps,
                   attentive_stopping_controller_weight=attentive_stopping_controller_weight,
@@ -649,6 +651,8 @@ elif init_from == 'resume':
         model_args['recurrent_prelude_injection'] = checkpoint_model_args['recurrent_prelude_injection']
     if 'recurrent_prelude_injection_mode' in checkpoint_model_args:
         model_args['recurrent_prelude_injection_mode'] = checkpoint_model_args['recurrent_prelude_injection_mode']
+    if 'recurrent_prelude_injection_first_block_only' in checkpoint_model_args:
+        model_args['recurrent_prelude_injection_first_block_only'] = checkpoint_model_args['recurrent_prelude_injection_first_block_only']
     # create the model
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
@@ -734,6 +738,9 @@ model_args['bp_truncate_depth'] = getattr(model.config, 'bp_truncate_depth', 0)
     model_args['recurrent_extra_layernorm'] = getattr(model.config, 'recurrent_extra_layernorm', False)
     model_args['recurrent_prelude_injection'] = getattr(model.config, 'recurrent_prelude_injection', False)
     model_args['recurrent_prelude_injection_mode'] = getattr(model.config, 'recurrent_prelude_injection_mode', 'add')
+    model_args['recurrent_prelude_injection_first_block_only'] = getattr(
+        model.config, 'recurrent_prelude_injection_first_block_only', False
+    )
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)

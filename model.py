@@ -437,6 +437,7 @@ class GPTConfig:
     recurrent_extra_layernorm: bool = False
     recurrent_prelude_injection: bool = False
     recurrent_prelude_injection_mode: str = 'add'
+    recurrent_prelude_injection_first_block_only: bool = False
     attentive_stopping: bool = False
     attentive_stopping_warmup_steps: int = 0
     attentive_stopping_controller_weight: float = 0.0
@@ -556,6 +557,9 @@ class GPT(nn.Module):
             self.recurrent_prelude_proj = nn.Linear(config.n_embd * 2, config.n_embd, bias=config.bias)
         else:
             self.recurrent_prelude_proj = None
+        self.recurrent_prelude_injection_first_block_only = bool(
+            getattr(config, 'recurrent_prelude_injection_first_block_only', False)
+        )
         self.attentive_stopping = config.attentive_stopping
         self.attentive_stopping_warmup_steps = config.attentive_stopping_warmup_steps
         self.attentive_stopping_controller_weight = config.attentive_stopping_controller_weight
@@ -799,8 +803,11 @@ class GPT(nn.Module):
                 raise RuntimeError("No shared blocks available for recurrent forwarding.")
             def run_shared_sequence(tensor, gate):
                 out = tensor
-                for block in shared_blocks:
-                    if self.recurrent_prelude_injection:
+                for block_idx, block in enumerate(shared_blocks):
+                    inject_prelude = self.recurrent_prelude_injection and (
+                        not self.recurrent_prelude_injection_first_block_only or block_idx == 0
+                    )
+                    if inject_prelude:
                         out = self._forward_shared_block(block, out, gate=gate, prelude_output=prelude_output)
                     else:
                         out = self._forward_shared_block(block, out, gate=gate)

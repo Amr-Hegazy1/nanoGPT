@@ -219,7 +219,9 @@ class OracleTeacher:
 
         states = []
         if model.config.share_parameters_across_layers:
-            blk = model.transformer.h[0]
+            shared_blocks = model.transformer.h
+            if len(shared_blocks) == 0:
+                raise RuntimeError("No shared blocks available for recurrent forwarding.")
             prelude_output = None
             if model.fixed_edge_blocks and model.fixed_head is not None:
                 for block in model.fixed_head:
@@ -227,10 +229,17 @@ class OracleTeacher:
                 if model.recurrent_prelude_injection:
                     prelude_output = x.clone()
 
-            if model.recurrent_prelude_injection:
-                shared_block_fn = lambda tensor: model._forward_shared_block(blk, tensor, prelude_output=prelude_output)
-            else:
-                shared_block_fn = lambda tensor: model._forward_shared_block(blk, tensor)
+            def shared_block_fn(tensor):
+                out = tensor
+                for block_idx, block in enumerate(shared_blocks):
+                    inject_prelude = model.recurrent_prelude_injection and (
+                        not getattr(model, 'recurrent_prelude_injection_first_block_only', False) or block_idx == 0
+                    )
+                    if inject_prelude:
+                        out = model._forward_shared_block(block, out, prelude_output=prelude_output)
+                    else:
+                        out = model._forward_shared_block(block, out)
+                return out
 
             for _ in range(depth):
                 x = shared_block_fn(x)
