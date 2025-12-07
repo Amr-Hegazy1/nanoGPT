@@ -223,6 +223,8 @@ This experiment allows you to reuse a single shared transformer block `n` times.
 
 *   **Fixed Edge Blocks:** Use `--fixed_edge_blocks=True` to keep a configurable number of Transformer blocks unshared at the beginning and end of the network, while looping a single shared block in the middle. The number of prelude and coda layers can be set with `--n_layers_prelude` and `--n_layers_coda`.
 
+*   **Multiple Shared Blocks:** Set `--recurrent_shared_num_blocks=<k>` (default `1`) to cycle through `k` shared blocks when parameters are tied across layers. Combine with `--share_parameters_across_layers=True` (and typically `--recurrent_shared_weights=True`).
+
 *   **Prelude Injection:** Use `--recurrent_prelude_injection=True` to inject the output of the prelude block into each recurrent block. Choose how it mixes in with `--recurrent_prelude_injection_mode=add|concat` (default `add`). The `concat` mode concatenates the prelude activations with the recurrent input and projects them back to the model width, mirroring the `add`/`concat` options from the `recurrent-pretraining` repository. This option requires `--fixed_edge_blocks=True` to be set.
 
 *   **Recurrent Noise:** Inject noise before each shared layer with `--recurrent_noise_mode=add|concat`, combining it with `--recurrent_noise_std=<float>` (and `--recurrent_noise_concat_dim=<int>` when concatenating).

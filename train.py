@@ -71,6 +71,7 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 share_parameters_across_layers = False
 recurrent_shared_weights = False
 recurrent_depth = 32
+recurrent_shared_num_blocks = 1
 bp_truncate_depth = 0
 # MoE parameters
 moe = False
@@ -436,6 +437,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   share_parameters_across_layers=share_parameters_across_layers,
                   recurrent_shared_weights=recurrent_shared_weights,
                   recurrent_depth=recurrent_depth,
+                  recurrent_shared_num_blocks=recurrent_shared_num_blocks,
                   bp_truncate_depth=bp_truncate_depth,
                   moe=moe, moe_num_experts=moe_num_experts, moe_top_k=moe_top_k, moe_hard_routing=moe_hard_routing, share_moe_experts=share_moe_experts,
                   scale_loss_by_n_layer=scale_loss_by_n_layer,
@@ -527,6 +529,8 @@ elif init_from == 'resume':
         model_args['recurrent_shared_weights'] = checkpoint_model_args['recurrent_shared_weights']
     if 'recurrent_depth' in checkpoint_model_args:
         model_args['recurrent_depth'] = checkpoint_model_args['recurrent_depth']
+    if 'recurrent_shared_num_blocks' in checkpoint_model_args:
+        model_args['recurrent_shared_num_blocks'] = checkpoint_model_args['recurrent_shared_num_blocks']
     if 'bp_truncate_depth' in checkpoint_model_args:
         model_args['bp_truncate_depth'] = checkpoint_model_args['bp_truncate_depth']
     if 'moe' in checkpoint_model_args:
@@ -667,10 +671,11 @@ elif init_from.startswith('gpt2'):
     # read off the created config params, so we can store them into checkpoint correctly
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
         model_args[k] = getattr(model.config, k)
-    model_args['share_parameters_across_layers'] = getattr(model.config, 'share_parameters_across_layers', False)
-    model_args['recurrent_shared_weights'] = getattr(model.config, 'recurrent_shared_weights', False)
-    model_args['recurrent_depth'] = getattr(model.config, 'recurrent_depth', 32)
-    model_args['bp_truncate_depth'] = getattr(model.config, 'bp_truncate_depth', 0)
+model_args['share_parameters_across_layers'] = getattr(model.config, 'share_parameters_across_layers', False)
+model_args['recurrent_shared_weights'] = getattr(model.config, 'recurrent_shared_weights', False)
+model_args['recurrent_depth'] = getattr(model.config, 'recurrent_depth', 32)
+model_args['recurrent_shared_num_blocks'] = getattr(model.config, 'recurrent_shared_num_blocks', 1)
+model_args['bp_truncate_depth'] = getattr(model.config, 'bp_truncate_depth', 0)
     model_args['moe'] = getattr(model.config, 'moe', False)
     model_args['moe_num_experts'] = getattr(model.config, 'moe_num_experts', 4)
     model_args['moe_top_k'] = getattr(model.config, 'moe_top_k', 2)

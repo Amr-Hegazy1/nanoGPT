@@ -360,6 +360,7 @@ class GPTConfig:
     # experiment: recurrent shared weights
     recurrent_shared_weights: bool = False
     recurrent_depth: int = 32 # default depth for recurrent shared weights
+    recurrent_shared_num_blocks: int = 1
     bp_truncate_depth: int = 0
     # MoE parameters
     moe: bool = False
@@ -585,7 +586,9 @@ class GPT(nn.Module):
         mlp_override = None
         if config.moe and config.share_moe_experts:
             mlp_override = MoE(config)
-        num_blocks = 1 if config.share_parameters_across_layers else config.n_layer
+        num_blocks = config.recurrent_shared_num_blocks if config.share_parameters_across_layers else config.n_layer
+        if config.share_parameters_across_layers and num_blocks < 1:
+            raise ValueError("recurrent_shared_num_blocks must be >= 1 when sharing parameters across layers.")
         h = nn.ModuleList([
             Block(config, mlp_override=mlp_override, use_rmsnorm=self.use_rmsnorm)
             for _ in range(num_blocks)
@@ -790,30 +793,28 @@ class GPT(nn.Module):
 
         if self.config.share_parameters_across_layers:
             prelude_output = None
-            blk = self.transformer.h[0]
-            if self.recurrent_prelude_injection:
-                shared_block_fn = lambda tensor, gate=None: self._forward_shared_block(blk, tensor, gate=gate, prelude_output=prelude_output)
-            else:
-                shared_block_fn = lambda tensor, gate=None: self._forward_shared_block(blk, tensor, gate=gate)
+            shared_blocks = self.transformer.h
+            num_shared_blocks = len(shared_blocks)
+            if num_shared_blocks == 0:
+                raise RuntimeError("No shared blocks available for recurrent forwarding.")
+            def run_shared_block(tensor, gate, step_idx):
+                block = shared_blocks[step_idx % num_shared_blocks]
+                if self.recurrent_prelude_injection:
+                    return self._forward_shared_block(block, tensor, gate=gate, prelude_output=prelude_output)
+                return self._forward_shared_block(block, tensor, gate=gate)
             if self.fixed_edge_blocks and self.fixed_head is not None:
                 for block in self.fixed_head:
                     x = block(x)
                 if self.recurrent_prelude_injection:
                     prelude_output = x.clone()
-
-            if self.bp_truncate_depth > 0:
-                step_state = {"i": 0}
-                base_shared_block_fn = shared_block_fn
-
-                def truncated_block_fn(tensor, gate=None):
-                    step_idx = step_state["i"]
-                    step_state["i"] += 1
-                    if step_idx < self.bp_truncate_depth:
-                        with torch.no_grad():
-                            return base_shared_block_fn(tensor, gate=gate)
-                    return base_shared_block_fn(tensor, gate=gate)
-
-                shared_block_fn = truncated_block_fn
+            step_state = {"i": 0}
+            def shared_block_fn(tensor, gate=None):
+                step_idx = step_state["i"]
+                step_state["i"] += 1
+                if self.bp_truncate_depth > 0 and step_idx < self.bp_truncate_depth:
+                    with torch.no_grad():
+                        return run_shared_block(tensor, gate, step_idx)
+                return run_shared_block(tensor, gate, step_idx)
 
             # Determine the number of recurrent steps
             if self.config.recurrent_shared_weights:
