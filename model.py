@@ -797,11 +797,14 @@ class GPT(nn.Module):
             num_shared_blocks = len(shared_blocks)
             if num_shared_blocks == 0:
                 raise RuntimeError("No shared blocks available for recurrent forwarding.")
-            def run_shared_block(tensor, gate, step_idx):
-                block = shared_blocks[step_idx % num_shared_blocks]
-                if self.recurrent_prelude_injection:
-                    return self._forward_shared_block(block, tensor, gate=gate, prelude_output=prelude_output)
-                return self._forward_shared_block(block, tensor, gate=gate)
+            def run_shared_sequence(tensor, gate):
+                out = tensor
+                for block in shared_blocks:
+                    if self.recurrent_prelude_injection:
+                        out = self._forward_shared_block(block, out, gate=gate, prelude_output=prelude_output)
+                    else:
+                        out = self._forward_shared_block(block, out, gate=gate)
+                return out
             if self.fixed_edge_blocks and self.fixed_head is not None:
                 for block in self.fixed_head:
                     x = block(x)
@@ -813,13 +816,14 @@ class GPT(nn.Module):
                 step_state["i"] += 1
                 if self.bp_truncate_depth > 0 and step_idx < self.bp_truncate_depth:
                     with torch.no_grad():
-                        return run_shared_block(tensor, gate, step_idx)
-                return run_shared_block(tensor, gate, step_idx)
+                        return run_shared_sequence(tensor, gate)
+                return run_shared_sequence(tensor, gate)
 
             # Determine the number of recurrent steps
             if self.config.recurrent_shared_weights:
                 # During training, n is sampled and passed. During inference, it can be user-specified.
-                num_layers = n if n is not None else self.config.recurrent_depth
+                base_depth = n if n is not None else self.config.recurrent_depth
+                num_layers = base_depth
             else:
                 num_layers = self.config.n_layer
             if self.oracle_curriculum_controller:
@@ -847,7 +851,7 @@ class GPT(nn.Module):
             stopping_result = self.stopping_controller.run(self, ctx)
             x = stopping_result.x
             aux_loss = stopping_result.aux_loss
-            num_expanded_layers = stopping_result.num_expanded_layers
+            num_expanded_layers = stopping_result.num_expanded_layers * num_shared_blocks
             if self.fixed_edge_blocks and self.fixed_tail is not None:
                 for block in self.fixed_tail:
                     x = block(x)
